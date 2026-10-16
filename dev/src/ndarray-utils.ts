@@ -54,10 +54,11 @@ export class NDArray {
  * Compute row-major strides for a given shape.
  */
 export function computeRowMajorStrides(shape: number[]): number[] {
-  if (shape.length === 0) return [1];
-  const strides = new Array(shape.length);
+  const rank = shape.length;
+  if (rank === 0) return [1];
+  const strides = new Array<number>(rank);
   let stride = 1;
-  for (let i = shape.length - 1; i >= 0; i--) {
+  for (let i = rank - 1; i >= 0; i--) {
     strides[i] = stride;
     stride *= shape[i];
   }
@@ -68,8 +69,34 @@ export function computeRowMajorStrides(shape: number[]): number[] {
  * Get total number of elements in a shape.
  */
 export function getShapeSize(shape: number[]): number {
-  if (shape.length === 0) return 1;
-  return shape.reduce((acc, val) => acc * val, 1);
+  let size = 1;
+  for (let i = 0; i < shape.length; i++) {
+    size *= shape[i];
+  }
+  return size;
+}
+
+/**
+ * Normalize a possibly negative dimension index into [0, ndim).
+ */
+export function normalizeDim(dim: number, ndim: number): number {
+  const d = dim < 0 ? dim + ndim : dim;
+  if (d < 0 || d >= ndim) {
+    throw new Error(`Dimension ${dim} out of range for ${ndim}-D tensor`);
+  }
+  return d;
+}
+
+/**
+ * Decompose shape around axis `d` into (outerSize, dimSize, innerSize).
+ */
+export function getAxisStrides(shape: number[], d: number): { outerSize: number; dimSize: number; innerSize: number } {
+  let outerSize = 1;
+  for (let i = 0; i < d; i++) outerSize *= shape[i];
+  const dimSize = shape[d];
+  let innerSize = 1;
+  for (let i = d + 1; i < shape.length; i++) innerSize *= shape[i];
+  return { outerSize, dimSize, innerSize };
 }
 
 /**
@@ -77,24 +104,32 @@ export function getShapeSize(shape: number[]): number {
  * auto-derive at most one `-1` dimension from the original shape.
  */
 export function resolveReshapeShape(originalShape: number[], newShape: number[]): number[] {
-  for (const s of newShape) {
+  let inferredIdx = -1;
+  let knownSize = 1;
+  for (let i = 0; i < newShape.length; i++) {
+    const s = newShape[i];
     if (!Number.isInteger(s) || s < -1) {
       throw new Error(`Invalid reshape shape: ${JSON.stringify(newShape)}`);
     }
+    if (s === -1) {
+      if (inferredIdx !== -1) {
+        throw new Error('Reshape shape can contain at most one -1 dimension');
+      }
+      inferredIdx = i;
+    } else {
+      knownSize *= s;
+    }
   }
   const origSize = getShapeSize(originalShape);
-  const inferredCount = newShape.filter((s) => s === -1).length;
-  if (inferredCount > 1) {
-    throw new Error('Reshape shape can contain at most one -1 dimension');
-  }
-  if (inferredCount === 1) {
-    const knownSize = newShape.reduce((acc, s) => (s === -1 ? acc : acc * s), 1);
+  if (inferredIdx !== -1) {
     if (knownSize === 0 || origSize % knownSize !== 0) {
       throw new Error(`Cannot infer -1 dimension: ${origSize} elements are not divisible by ${knownSize}`);
     }
-    return newShape.map((s) => (s === -1 ? origSize / knownSize : s));
+    const resolved = newShape.slice();
+    resolved[inferredIdx] = origSize / knownSize;
+    return resolved;
   }
-  if (getShapeSize(newShape) !== origSize) {
+  if (knownSize !== origSize) {
     throw new Error(`Reshape size mismatch: ${origSize} elements cannot be reshaped to ${JSON.stringify(newShape)}`);
   }
   return newShape;
@@ -104,42 +139,39 @@ export function resolveReshapeShape(originalShape: number[], newShape: number[])
  * Create an NDArray from a Float32Array buffer and shape.
  */
 export function createNdArray(buffer: Float32Array, shape: number[]): NDArray {
-  const strides = computeRowMajorStrides(shape);
-  return new NDArray('float64', buffer, shape, strides, 0, 'row-major');
+  return new NDArray('float32', buffer, shape, computeRowMajorStrides(shape), 0, 'row-major');
 }
 
 /**
  * Create an all-zeros ndarray with the given shape.
  */
-export function zerosNdArray(shape: number[]): any {
-  const size = getShapeSize(shape);
-  return createNdArray(new Float32Array(size), shape);
+export function zerosNdArray(shape: number[]): NDArray {
+  return createNdArray(new Float32Array(getShapeSize(shape)), shape);
 }
 
 /**
  * Create an all-ones ndarray with the given shape.
  */
-export function onesNdArray(shape: number[]): any {
-  const size = getShapeSize(shape);
-  const buffer = new Float32Array(size);
+export function onesNdArray(shape: number[]): NDArray {
+  const buffer = new Float32Array(getShapeSize(shape));
   buffer.fill(1.0);
   return createNdArray(buffer, shape);
 }
 
 /**
- * Create a random normal distribution ndarray (Box-Muller approximation or standard random).
+ * Create a random normal distribution ndarray (Box-Muller transform).
  */
-export function randomNormalNdArray(shape: number[], mean = 0, std = 1): any {
+export function randomNormalNdArray(shape: number[], mean = 0, std = 1): NDArray {
   const size = getShapeSize(shape);
   const buffer = new Float32Array(size);
+  const twoPi = 2.0 * Math.PI;
   for (let i = 0; i < size; i += 2) {
     const u1 = Math.max(1e-15, Math.random());
-    const u2 = Math.random();
-    const z0 = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
-    const z1 = Math.sqrt(-2.0 * Math.log(u1)) * Math.sin(2.0 * Math.PI * u2);
-    buffer[i] = mean + z0 * std;
+    const u2 = twoPi * Math.random();
+    const r = Math.sqrt(-2.0 * Math.log(u1)) * std;
+    buffer[i] = mean + r * Math.cos(u2);
     if (i + 1 < size) {
-      buffer[i + 1] = mean + z1 * std;
+      buffer[i + 1] = mean + r * Math.sin(u2);
     }
   }
   return createNdArray(buffer, shape);
@@ -154,7 +186,6 @@ export function fromJsArray(input: number | any[]): { ndarray: NDArray; shape: n
     return { ndarray: createNdArray(buffer, []), shape: [] };
   }
 
-  // Infer shape
   const shape: number[] = [];
   let curr: any = input;
   while (Array.isArray(curr)) {
@@ -162,46 +193,51 @@ export function fromJsArray(input: number | any[]): { ndarray: NDArray; shape: n
     curr = curr[0];
   }
 
-  const flatList: number[] = [];
+  const buffer = new Float32Array(getShapeSize(shape));
+  let idx = 0;
   function flatten(arr: any[]) {
-    for (const item of arr) {
+    for (let i = 0; i < arr.length; i++) {
+      const item = arr[i];
       if (Array.isArray(item)) {
         flatten(item);
       } else {
-        flatList.push(Number(item));
+        buffer[idx++] = Number(item);
       }
     }
   }
   flatten(input);
 
-  const buffer = new Float32Array(flatList);
   return { ndarray: createNdArray(buffer, shape), shape };
 }
 
 /**
- * Convert an NDArray back to a JS nested Array (or scalar array).
+ * Convert an NDArray back to a JS nested Array (or scalar).
  */
 export function toJsArray(nd: any): any {
   const shape: number[] = nd.shape;
   if (shape.length === 0) {
     return nd.data[nd.offset];
   }
-  return toNestedArray(nd.data, shape, nd.offset, nd.strides, 0, []);
+  return toNestedArray(nd.data, shape, nd.offset, nd.strides, 0);
 }
 
-function toNestedArray(data: Float32Array, shape: number[], offset: number, strides: number[], dim: number, pos: number[]): any {
+function toNestedArray(
+  data: Float32Array,
+  shape: number[],
+  baseOffset: number,
+  strides: number[],
+  dim: number
+): any {
   const size = shape[dim];
-  const result: any[] = [];
-  for (let i = 0; i < size; i++) {
-    const newPos = [...pos, i];
-    if (dim === shape.length - 1) {
-      let idx = offset;
-      for (let j = 0; j < newPos.length; j++) {
-        idx += newPos[j] * strides[j];
-      }
-      result.push(data[idx]);
-    } else {
-      result.push(toNestedArray(data, shape, offset, strides, dim + 1, newPos));
+  const stride = strides[dim];
+  const result = new Array(size);
+  if (dim === shape.length - 1) {
+    for (let i = 0; i < size; i++) {
+      result[i] = data[baseOffset + i * stride];
+    }
+  } else {
+    for (let i = 0; i < size; i++) {
+      result[i] = toNestedArray(data, shape, baseOffset + i * stride, strides, dim + 1);
     }
   }
   return result;
@@ -210,46 +246,58 @@ function toNestedArray(data: Float32Array, shape: number[], offset: number, stri
 /**
  * Clone an ndarray.
  */
-export function cloneNdArray(nd: any): any {
-  const newBuf = new Float32Array(nd.data);
-  return createNdArray(newBuf, Array.from(nd.shape));
+export function cloneNdArray(nd: any): NDArray {
+  return createNdArray(new Float32Array(nd.data), nd.shape.slice());
+}
+
+export function arraysEqual(a: number[], b: number[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function isSingleElement(nd: any): boolean {
+  return nd.data.length === 1 && (nd.shape.length === 0 || (nd.shape.length === 1 && nd.shape[0] === 1));
 }
 
 /**
- * Element-wise addition of two ndarrays (supports scalar/shape broadcasting or same shape).
+ * Element-wise addition of two ndarrays.
  */
-export function addNdArray(a: any, b: any): any {
-  const sizeA = a.data.length;
-  const sizeB = b.data.length;
+export function addNdArray(a: any, b: any): NDArray {
+  const aData = a.data;
+  const bData = b.data;
+  const sizeA = aData.length;
+  const sizeB = bData.length;
 
   if (sizeA === sizeB && arraysEqual(a.shape, b.shape)) {
     const outBuf = new Float32Array(sizeA);
-    for (let i = 0; i < sizeA; i++) {
-      outBuf[i] = a.data[i] + b.data[i];
-    }
-    return createNdArray(outBuf, Array.from(a.shape));
+    for (let i = 0; i < sizeA; i++) outBuf[i] = aData[i] + bData[i];
+    return createNdArray(outBuf, a.shape.slice());
   }
-
-  // Handle scalar broadcast (e.g. bias shape [1])
-  if (a.shape.length === 1 && a.shape[0] === 1) {
+  if (isSingleElement(a)) {
     const outBuf = new Float32Array(sizeB);
-    const val = a.data[0];
-    for (let i = 0; i < sizeB; i++) {
-      outBuf[i] = val + b.data[i];
-    }
-    return createNdArray(outBuf, Array.from(b.shape));
+    const val = aData[0];
+    for (let i = 0; i < sizeB; i++) outBuf[i] = val + bData[i];
+    return createNdArray(outBuf, b.shape.slice());
   }
-
-  if (b.shape.length === 1 && b.shape[0] === 1) {
+  if (isSingleElement(b)) {
     const outBuf = new Float32Array(sizeA);
-    const val = b.data[0];
-    for (let i = 0; i < sizeA; i++) {
-      outBuf[i] = a.data[i] + val;
+    const val = bData[0];
+    for (let i = 0; i < sizeA; i++) outBuf[i] = aData[i] + val;
+    return createNdArray(outBuf, a.shape.slice());
+  }
+  if (sizeB > 0 && isSuffixBroadcast(b.shape, a.shape)) {
+    const outBuf = new Float32Array(sizeA);
+    const outer = sizeA / sizeB;
+    for (let o = 0; o < outer; o++) {
+      const base = o * sizeB;
+      for (let j = 0; j < sizeB; j++) outBuf[base + j] = aData[base + j] + bData[j];
     }
-    return createNdArray(outBuf, Array.from(a.shape));
+    return createNdArray(outBuf, a.shape.slice());
   }
 
-  // Handle general broadcast by expanding b to a's shape
   const bBroadcast = broadcastNdArray(b, a.shape);
   return addNdArray(a, bBroadcast);
 }
@@ -257,37 +305,39 @@ export function addNdArray(a: any, b: any): any {
 /**
  * Element-wise subtraction of two ndarrays.
  */
-export function subNdArray(a: any, b: any): any {
-  const sizeA = a.data.length;
-  const sizeB = b.data.length;
+export function subNdArray(a: any, b: any): NDArray {
+  const aData = a.data;
+  const bData = b.data;
+  const sizeA = aData.length;
+  const sizeB = bData.length;
 
   if (sizeA === sizeB && arraysEqual(a.shape, b.shape)) {
     const outBuf = new Float32Array(sizeA);
-    for (let i = 0; i < sizeA; i++) {
-      outBuf[i] = a.data[i] - b.data[i];
-    }
-    return createNdArray(outBuf, Array.from(a.shape));
+    for (let i = 0; i < sizeA; i++) outBuf[i] = aData[i] - bData[i];
+    return createNdArray(outBuf, a.shape.slice());
   }
-
-  if (a.shape.length === 1 && a.shape[0] === 1) {
+  if (isSingleElement(a)) {
     const outBuf = new Float32Array(sizeB);
-    const val = a.data[0];
-    for (let i = 0; i < sizeB; i++) {
-      outBuf[i] = val - b.data[i];
-    }
-    return createNdArray(outBuf, Array.from(b.shape));
+    const val = aData[0];
+    for (let i = 0; i < sizeB; i++) outBuf[i] = val - bData[i];
+    return createNdArray(outBuf, b.shape.slice());
   }
-
-  if (b.shape.length === 1 && b.shape[0] === 1) {
+  if (isSingleElement(b)) {
     const outBuf = new Float32Array(sizeA);
-    const val = b.data[0];
-    for (let i = 0; i < sizeA; i++) {
-      outBuf[i] = a.data[i] - val;
+    const val = bData[0];
+    for (let i = 0; i < sizeA; i++) outBuf[i] = aData[i] - val;
+    return createNdArray(outBuf, a.shape.slice());
+  }
+  if (sizeB > 0 && isSuffixBroadcast(b.shape, a.shape)) {
+    const outBuf = new Float32Array(sizeA);
+    const outer = sizeA / sizeB;
+    for (let o = 0; o < outer; o++) {
+      const base = o * sizeB;
+      for (let j = 0; j < sizeB; j++) outBuf[base + j] = aData[base + j] - bData[j];
     }
-    return createNdArray(outBuf, Array.from(a.shape));
+    return createNdArray(outBuf, a.shape.slice());
   }
 
-  // Handle general broadcast by expanding b to a's shape
   const bBroadcast = broadcastNdArray(b, a.shape);
   return subNdArray(a, bBroadcast);
 }
@@ -295,37 +345,39 @@ export function subNdArray(a: any, b: any): any {
 /**
  * Element-wise multiplication of two ndarrays.
  */
-export function mulNdArray(a: any, b: any): any {
-  const sizeA = a.data.length;
-  const sizeB = b.data.length;
+export function mulNdArray(a: any, b: any): NDArray {
+  const aData = a.data;
+  const bData = b.data;
+  const sizeA = aData.length;
+  const sizeB = bData.length;
 
   if (sizeA === sizeB && arraysEqual(a.shape, b.shape)) {
     const outBuf = new Float32Array(sizeA);
-    for (let i = 0; i < sizeA; i++) {
-      outBuf[i] = a.data[i] * b.data[i];
-    }
-    return createNdArray(outBuf, Array.from(a.shape));
+    for (let i = 0; i < sizeA; i++) outBuf[i] = aData[i] * bData[i];
+    return createNdArray(outBuf, a.shape.slice());
   }
-
-  if (a.shape.length === 1 && a.shape[0] === 1) {
+  if (isSingleElement(a)) {
     const outBuf = new Float32Array(sizeB);
-    const val = a.data[0];
-    for (let i = 0; i < sizeB; i++) {
-      outBuf[i] = val * b.data[i];
-    }
-    return createNdArray(outBuf, Array.from(b.shape));
+    const val = aData[0];
+    for (let i = 0; i < sizeB; i++) outBuf[i] = val * bData[i];
+    return createNdArray(outBuf, b.shape.slice());
   }
-
-  if (b.shape.length === 1 && b.shape[0] === 1) {
+  if (isSingleElement(b)) {
     const outBuf = new Float32Array(sizeA);
-    const val = b.data[0];
-    for (let i = 0; i < sizeA; i++) {
-      outBuf[i] = a.data[i] * val;
+    const val = bData[0];
+    for (let i = 0; i < sizeA; i++) outBuf[i] = aData[i] * val;
+    return createNdArray(outBuf, a.shape.slice());
+  }
+  if (sizeB > 0 && isSuffixBroadcast(b.shape, a.shape)) {
+    const outBuf = new Float32Array(sizeA);
+    const outer = sizeA / sizeB;
+    for (let o = 0; o < outer; o++) {
+      const base = o * sizeB;
+      for (let j = 0; j < sizeB; j++) outBuf[base + j] = aData[base + j] * bData[j];
     }
-    return createNdArray(outBuf, Array.from(a.shape));
+    return createNdArray(outBuf, a.shape.slice());
   }
 
-  // Handle general broadcast by expanding b to a's shape
   const bBroadcast = broadcastNdArray(b, a.shape);
   return mulNdArray(a, bBroadcast);
 }
@@ -333,57 +385,62 @@ export function mulNdArray(a: any, b: any): any {
 /**
  * Element-wise division of two ndarrays.
  */
-export function divNdArray(a: any, b: any): any {
-  const sizeA = a.data.length;
-  const sizeB = b.data.length;
+export function divNdArray(a: any, b: any): NDArray {
+  const aData = a.data;
+  const bData = b.data;
+  const sizeA = aData.length;
+  const sizeB = bData.length;
 
   if (sizeA === sizeB && arraysEqual(a.shape, b.shape)) {
     const outBuf = new Float32Array(sizeA);
-    for (let i = 0; i < sizeA; i++) {
-      outBuf[i] = a.data[i] / b.data[i];
-    }
-    return createNdArray(outBuf, Array.from(a.shape));
+    for (let i = 0; i < sizeA; i++) outBuf[i] = aData[i] / bData[i];
+    return createNdArray(outBuf, a.shape.slice());
   }
-
-  if (a.shape.length === 1 && a.shape[0] === 1) {
+  if (isSingleElement(a)) {
     const outBuf = new Float32Array(sizeB);
-    const val = a.data[0];
-    for (let i = 0; i < sizeB; i++) {
-      outBuf[i] = val / b.data[i];
-    }
-    return createNdArray(outBuf, Array.from(b.shape));
+    const val = aData[0];
+    for (let i = 0; i < sizeB; i++) outBuf[i] = val / bData[i];
+    return createNdArray(outBuf, b.shape.slice());
   }
-
-  if (b.shape.length === 1 && b.shape[0] === 1) {
+  if (isSingleElement(b)) {
     const outBuf = new Float32Array(sizeA);
-    const val = b.data[0];
-    for (let i = 0; i < sizeA; i++) {
-      outBuf[i] = a.data[i] / val;
+    const val = bData[0];
+    for (let i = 0; i < sizeA; i++) outBuf[i] = aData[i] / val;
+    return createNdArray(outBuf, a.shape.slice());
+  }
+  if (sizeB > 0 && isSuffixBroadcast(b.shape, a.shape)) {
+    const outBuf = new Float32Array(sizeA);
+    const outer = sizeA / sizeB;
+    for (let o = 0; o < outer; o++) {
+      const base = o * sizeB;
+      for (let j = 0; j < sizeB; j++) outBuf[base + j] = aData[base + j] / bData[j];
     }
-    return createNdArray(outBuf, Array.from(a.shape));
+    return createNdArray(outBuf, a.shape.slice());
   }
 
-  // Handle general broadcast by expanding b to a's shape
   const bBroadcast = broadcastNdArray(b, a.shape);
   return divNdArray(a, bBroadcast);
 }
-
 
 /**
  * Matrix multiplication supporting PyTorch torch.matmul semantics.
  * Supports: 1D x 1D, 2D x 1D, 1D x 2D, 2D x 2D, and arbitrary batched
  * broadcasting for tensors of rank >= 2 (e.g. [B,M,K] x [K,N]).
  */
-export function matMulNdArray(a: any, b: any): any {
+export function matMulNdArray(a: any, b: any): NDArray {
   const rankA = a.shape.length;
   const rankB = b.shape.length;
+  const aData = a.data;
+  const bData = b.data;
+  const aOff = a.offset;
+  const bOff = b.offset;
 
   // 1D x 1D: dot product scalar
   if (rankA === 1 && rankB === 1) {
     const K = a.shape[0];
     let sum = 0;
     for (let k = 0; k < K; k++) {
-      sum += a.get(k) * b.get(k);
+      sum += aData[aOff + k] * bData[bOff + k];
     }
     return createNdArray(new Float32Array([sum]), []);
   }
@@ -395,8 +452,9 @@ export function matMulNdArray(a: any, b: any): any {
     const outBuf = new Float32Array(M);
     for (let i = 0; i < M; i++) {
       let sum = 0;
+      const aRow = aOff + i * K;
       for (let k = 0; k < K; k++) {
-        sum += a.get(i, k) * b.get(k);
+        sum += aData[aRow + k] * bData[bOff + k];
       }
       outBuf[i] = sum;
     }
@@ -408,23 +466,46 @@ export function matMulNdArray(a: any, b: any): any {
     const K = a.shape[0];
     const N = b.shape[1];
     const outBuf = new Float32Array(N);
-    for (let j = 0; j < N; j++) {
-      let sum = 0;
-      for (let k = 0; k < K; k++) {
-        sum += a.get(k) * b.get(k, j);
+    for (let k = 0; k < K; k++) {
+      const ak = aData[aOff + k];
+      const bRow = bOff + k * N;
+      for (let j = 0; j < N; j++) {
+        outBuf[j] += ak * bData[bRow + j];
       }
-      outBuf[j] = sum;
     }
     return createNdArray(outBuf, [N]);
+  }
+
+  // Fast path 2D x 2D: matrix-matrix -> 2D [M, N]
+  if (rankA === 2 && rankB === 2) {
+    const M = a.shape[0];
+    const K = a.shape[1];
+    const N = b.shape[1];
+    if (K !== b.shape[0]) {
+      throw new Error(`Incompatible matmul shapes: ${JSON.stringify(a.shape)} x ${JSON.stringify(b.shape)}`);
+    }
+    const outBuf = new Float32Array(M * N);
+    for (let i = 0; i < M; i++) {
+      const outRow = i * N;
+      const aRow = aOff + i * K;
+      for (let k = 0; k < K; k++) {
+        const aik = aData[aRow + k];
+        const bRow = bOff + k * N;
+        for (let j = 0; j < N; j++) {
+          outBuf[outRow + j] += aik * bData[bRow + j];
+        }
+      }
+    }
+    return createNdArray(outBuf, [M, N]);
   }
 
   // General batched case: both tensors rank >= 2 with broadcasting.
   return matMulBroadcastNdArray(a, b);
 }
 
-function broadcastShapes(shapeA: number[], shapeB: number[]): number[] {
+function broadcastBatchShapes(shapeA: number[], shapeB: number[]): number[] {
   const maxLen = Math.max(shapeA.length, shapeB.length);
-  const result: number[] = [];
+  const result = new Array<number>(maxLen);
   for (let i = 0; i < maxLen; i++) {
     const idxA = shapeA.length - 1 - i;
     const idxB = shapeB.length - 1 - i;
@@ -433,42 +514,14 @@ function broadcastShapes(shapeA: number[], shapeB: number[]): number[] {
     if (dimA !== dimB && dimA !== 1 && dimB !== 1) {
       throw new Error(`Cannot broadcast matmul batch shapes ${JSON.stringify(shapeA)} and ${JSON.stringify(shapeB)}`);
     }
-    result.unshift(Math.max(dimA, dimB));
+    result[maxLen - 1 - i] = Math.max(dimA, dimB);
   }
   return result;
 }
 
-function posFromFlatIndex(flat: number, shape: number[]): number[] {
-  const pos: number[] = new Array(shape.length).fill(0);
-  let tmp = flat;
-  for (let i = shape.length - 1; i >= 0; i--) {
-    pos[i] = tmp % shape[i];
-    tmp = Math.floor(tmp / shape[i]);
-  }
-  return pos;
-}
-
-function getBroadcastPos(outPos: number[], inShape: number[]): number[] {
-  const pos: number[] = [];
-  const offset = outPos.length - inShape.length;
-  for (let i = 0; i < inShape.length; i++) {
-    const outIdx = outPos[offset + i];
-    pos.push(inShape[i] === 1 ? 0 : outIdx);
-  }
-  return pos;
-}
-
-function getFlatOffset(pos: number[], strides: number[]): number {
-  let offset = 0;
-  for (let i = 0; i < pos.length; i++) {
-    offset += pos[i] * strides[i];
-  }
-  return offset;
-}
-
-function matMulBroadcastNdArray(a: any, b: any): any {
-  const aShape: number[] = Array.from(a.shape);
-  const bShape: number[] = Array.from(b.shape);
+function matMulBroadcastNdArray(a: any, b: any): NDArray {
+  const aShape: number[] = a.shape;
+  const bShape: number[] = b.shape;
   const rankA = aShape.length;
   const rankB = bShape.length;
   if (rankA < 2 || rankB < 2) {
@@ -483,26 +536,61 @@ function matMulBroadcastNdArray(a: any, b: any): any {
   }
   const batchShapeA = aShape.slice(0, -2);
   const batchShapeB = bShape.slice(0, -2);
-  const batchShape = broadcastShapes(batchShapeA, batchShapeB);
+  const batchShape = broadcastBatchShapes(batchShapeA, batchShapeB);
+  const batchRank = batchShape.length;
   const batchSize = getShapeSize(batchShape);
   const outShape = [...batchShape, M, N];
-  const outBuf = new Float32Array(batchSize * M * N).fill(0);
+  const outBuf = new Float32Array(batchSize * M * N);
 
+  const aData = a.data;
+  const bData = b.data;
   const aStrides = a.strides;
   const bStrides = b.strides;
 
+  // Precompute broadcast batch strides aligned with batchShape
+  const aBatchStrides = new Array<number>(batchRank).fill(0);
+  const bBatchStrides = new Array<number>(batchRank).fill(0);
+  const offsetA = batchRank - batchShapeA.length;
+  const offsetB = batchRank - batchShapeB.length;
+  for (let i = 0; i < batchShapeA.length; i++) {
+    aBatchStrides[offsetA + i] = batchShapeA[i] === 1 ? 0 : aStrides[i];
+  }
+  for (let i = 0; i < batchShapeB.length; i++) {
+    bBatchStrides[offsetB + i] = batchShapeB[i] === 1 ? 0 : bStrides[i];
+  }
+
+  const aStrideM = aStrides[rankA - 2];
+  const aStrideK = aStrides[rankA - 1];
+  const bStrideK = bStrides[rankB - 2];
+  const bStrideN = bStrides[rankB - 1];
+  const mn = M * N;
+
   for (let batch = 0; batch < batchSize; batch++) {
-    const outPos = posFromFlatIndex(batch, batchShape);
-    const aPos = getBroadcastPos(outPos, batchShapeA);
-    const bPos = getBroadcastPos(outPos, batchShapeB);
-    const aBatchOffset = a.offset + getFlatOffset(aPos, aStrides);
-    const bBatchOffset = b.offset + getFlatOffset(bPos, bStrides);
+    let tmp = batch;
+    let aBatchOffset = a.offset;
+    let bBatchOffset = b.offset;
+    for (let d = batchRank - 1; d >= 0; d--) {
+      const coord = tmp % batchShape[d];
+      tmp = (tmp - coord) / batchShape[d];
+      aBatchOffset += coord * aBatchStrides[d];
+      bBatchOffset += coord * bBatchStrides[d];
+    }
+
+    const outBatchBase = batch * mn;
     for (let i = 0; i < M; i++) {
+      const outRow = outBatchBase + i * N;
+      const aRow = aBatchOffset + i * aStrideM;
       for (let k = 0; k < K; k++) {
-        const aIdx = aBatchOffset + i * aStrides[rankA - 2] + k * aStrides[rankA - 1];
-        for (let j = 0; j < N; j++) {
-          const bIdx = bBatchOffset + k * bStrides[rankB - 2] + j * bStrides[rankB - 1];
-          outBuf[batch * M * N + i * N + j] += a.data[aIdx] * b.data[bIdx];
+        const aik = aData[aRow + k * aStrideK];
+        const bRow = bBatchOffset + k * bStrideK;
+        if (bStrideN === 1) {
+          for (let j = 0; j < N; j++) {
+            outBuf[outRow + j] += aik * bData[bRow + j];
+          }
+        } else {
+          for (let j = 0; j < N; j++) {
+            outBuf[outRow + j] += aik * bData[bRow + j * bStrideN];
+          }
         }
       }
     }
@@ -510,81 +598,65 @@ function matMulBroadcastNdArray(a: any, b: any): any {
   return createNdArray(outBuf, outShape);
 }
 
-function matMul2D(a: any, b: any): any {
-  const shapeA = a.shape;
-  const shapeB = b.shape;
-  const M = shapeA[0];
-  const K = shapeA[1];
-  const N = shapeB[1];
-  const outBuf = new Float32Array(M * N).fill(0);
-  for (let i = 0; i < M; i++) {
-    for (let k = 0; k < K; k++) {
-      const aik = a.get(i, k);
-      for (let j = 0; j < N; j++) {
-        outBuf[i * N + j] += aik * b.get(k, j);
-      }
-    }
-  }
-  return createNdArray(outBuf, [M, N]);
-}
-
-/**
- * Transpose a 2D matrix.
- */
 /**
  * ReLU activation forward: max(0, x).
  */
-export function reluNdArray(a: any): any {
-  const size = a.data.length;
+export function reluNdArray(a: any): NDArray {
+  const aData = a.data;
+  const size = aData.length;
   const outBuf = new Float32Array(size);
   for (let i = 0; i < size; i++) {
-    outBuf[i] = Math.max(0, a.data[i]);
+    const v = aData[i];
+    outBuf[i] = v > 0 ? v : 0;
   }
-  return createNdArray(outBuf, Array.from(a.shape));
+  return createNdArray(outBuf, a.shape.slice());
 }
 
 /**
  * ReLU activation backward.
  */
-export function reluGradNdArray(gradOut: any, forwardInput: any): any {
-  const size = gradOut.data.length;
+export function reluGradNdArray(gradOut: any, forwardInput: any): NDArray {
+  const gData = gradOut.data;
+  const xData = forwardInput.data;
+  const size = gData.length;
   const outBuf = new Float32Array(size);
   for (let i = 0; i < size; i++) {
-    outBuf[i] = forwardInput.data[i] > 0 ? gradOut.data[i] : 0;
+    outBuf[i] = xData[i] > 0 ? gData[i] : 0;
   }
-  return createNdArray(outBuf, Array.from(gradOut.shape));
+  return createNdArray(outBuf, gradOut.shape.slice());
 }
 
 /**
  * Mean Squared Error loss between pred and target.
  */
-export function mseLossNdArray(pred: any, target: any): { lossValue: number; gradPred: any } {
-  const size = pred.data.length;
+export function mseLossNdArray(pred: any, target: any, computeGrad = true): { lossValue: number; gradPred: NDArray | null } {
+  const pData = pred.data;
+  const tData = target.data;
+  const size = pData.length;
   let sumSq = 0;
-  const gradBuf = new Float32Array(size);
-  for (let i = 0; i < size; i++) {
-    const diff = pred.data[i] - target.data[i];
-    sumSq += diff * diff;
-    gradBuf[i] = (2.0 * diff) / size;
+  if (!computeGrad) {
+    for (let i = 0; i < size; i++) {
+      const diff = pData[i] - tData[i];
+      sumSq += diff * diff;
+    }
+    return { lossValue: sumSq / size, gradPred: null };
   }
-  const lossValue = sumSq / size;
+  const gradBuf = new Float32Array(size);
+  const invScale = 2.0 / size;
+  for (let i = 0; i < size; i++) {
+    const diff = pData[i] - tData[i];
+    sumSq += diff * diff;
+    gradBuf[i] = diff * invScale;
+  }
   return {
-    lossValue,
-    gradPred: createNdArray(gradBuf, Array.from(pred.shape))
+    lossValue: sumSq / size,
+    gradPred: createNdArray(gradBuf, pred.shape.slice())
   };
 }
 
 // ============================================================================
 // Advanced Tensor Structure Operations
 // ============================================================================
-
-function normalizeDim(dim: number, ndim: number): number {
-  let d = dim < 0 ? dim + ndim : dim;
-  if (d < 0 || d >= ndim) {
-    throw new Error(`Dimension ${dim} out of range for ${ndim}-D tensor`);
-  }
-  return d;
-}
 
 function isCompatibleBroadcast(srcShape: number[], targetShape: number[]): boolean {
   if (srcShape.length > targetShape.length) return false;
@@ -598,12 +670,34 @@ function isCompatibleBroadcast(srcShape: number[], targetShape: number[]): boole
 }
 
 /**
+ * Returns true if srcShape broadcasts into targetShape purely by repeating
+ * the contiguous flat buffer of srcShape along leading dimensions.
+ */
+function isSuffixBroadcast(srcShape: number[], targetShape: number[]): boolean {
+  if (srcShape.length > targetShape.length) return false;
+  const offset = targetShape.length - srcShape.length;
+  let seenNonOne = false;
+  for (let i = 0; i < srcShape.length; i++) {
+    const s = srcShape[i];
+    const t = targetShape[offset + i];
+    if (s === t) {
+      if (s !== 1) seenNonOne = true;
+    } else if (s === 1) {
+      if (seenNonOne) return false;
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * Insert a size-1 dimension at the specified axis (supports negative indexing and append).
  * PyTorch-compatible: dim in [-ndim-1, ndim].
  */
-export function unsqueezeNdArray(nd: any, dim: number): any {
+export function unsqueezeNdArray(nd: any, dim: number): NDArray {
   const ndim = nd.shape.length;
-  let d = dim < 0 ? dim + ndim + 1 : dim;
+  const d = dim < 0 ? dim + ndim + 1 : dim;
   if (d < 0 || d > ndim) {
     throw new Error(`Dimension ${dim} out of range for ${ndim}-D tensor`);
   }
@@ -614,10 +708,9 @@ export function unsqueezeNdArray(nd: any, dim: number): any {
 /**
  * Remove all size-1 dimensions, or a specific dimension if dim is provided.
  */
-export function squeezeNdArray(nd: any, dim?: number): any {
+export function squeezeNdArray(nd: any, dim?: number): NDArray {
   if (dim !== undefined) {
-    const ndim = nd.shape.length;
-    const d = normalizeDim(dim, ndim);
+    const d = normalizeDim(dim, nd.shape.length);
     if (nd.shape[d] !== 1) {
       throw new Error(`Squeeze target dim ${d} has size ${nd.shape[d]}, not 1`);
     }
@@ -629,60 +722,73 @@ export function squeezeNdArray(nd: any, dim?: number): any {
 }
 
 /**
- * Broadcast an ndarray to a target shape (row-major, element-wise copy).
+ * Broadcast an ndarray to a target shape (flat stride-based copy, no per-element array allocation).
  */
-export function expandNdArray(nd: any, targetShape: number[]): any {
+export function expandNdArray(nd: any, targetShape: number[]): NDArray {
   if (!isCompatibleBroadcast(nd.shape, targetShape)) {
     throw new Error(`Cannot broadcast shape ${JSON.stringify(nd.shape)} to ${JSON.stringify(targetShape)}`);
   }
-  const srcShape = nd.shape;
+  const rank = targetShape.length;
   const outSize = getShapeSize(targetShape);
   const outBuf = new Float32Array(outSize);
-  const outStrides = computeRowMajorStrides(targetShape);
-  const srcStrides = computeRowMajorStrides(srcShape);
+  if (outSize === 0) return createNdArray(outBuf, targetShape.slice());
 
-  const paddedSrcShape = new Array(targetShape.length).fill(1);
-  for (let i = 0; i < srcShape.length; i++) {
-    paddedSrcShape[targetShape.length - srcShape.length + i] = srcShape[i];
+  const srcData = nd.data;
+  const srcOff = nd.offset;
+  if (srcData.length === 1) {
+    outBuf.fill(srcData[srcOff]);
+    return createNdArray(outBuf, targetShape.slice());
+  }
+  if (srcOff === 0 && isSuffixBroadcast(nd.shape, targetShape)) {
+    const srcLen = srcData.length;
+    const outer = outSize / srcLen;
+    for (let o = 0; o < outer; o++) {
+      outBuf.set(srcData, o * srcLen);
+    }
+    return createNdArray(outBuf, targetShape.slice());
   }
 
-  function iterate(pos: number[], d: number) {
-    if (d === targetShape.length) {
-      let srcIdx = 0;
-      for (let i = 0; i < targetShape.length; i++) {
-        const srcDim = paddedSrcShape[i];
-        if (srcDim !== 1) {
-          const srcStrideIdx = i - (targetShape.length - srcShape.length);
-          srcIdx += pos[i] * srcStrides[srcStrideIdx];
+  const srcShape: number[] = nd.shape;
+  const srcStrides = computeRowMajorStrides(srcShape);
+  const outStrides = computeRowMajorStrides(targetShape);
+  const paddedSrcStrides = new Array<number>(rank).fill(0);
+  const offset = rank - srcShape.length;
+  for (let i = 0; i < srcShape.length; i++) {
+    paddedSrcStrides[offset + i] = srcShape[i] === 1 ? 0 : srcStrides[i];
+  }
+
+  const lastDim = targetShape[rank - 1];
+  const lastSrcStride = paddedSrcStrides[rank - 1];
+
+  function copyRecursive(dim: number, srcBase: number, outBase: number): void {
+    if (dim === rank - 1) {
+      if (lastSrcStride === 0) {
+        outBuf.fill(srcData[srcBase], outBase, outBase + lastDim);
+      } else {
+        for (let i = 0; i < lastDim; i++) {
+          outBuf[outBase + i] = srcData[srcBase + i * lastSrcStride];
         }
       }
-      let outIdx = 0;
-      for (let i = 0; i < targetShape.length; i++) {
-        outIdx += pos[i] * outStrides[i];
-      }
-      outBuf[outIdx] = nd.data[srcIdx + nd.offset];
       return;
     }
-    for (let i = 0; i < targetShape[d]; i++) {
-      pos.push(i);
-      iterate(pos, d + 1);
-      pos.pop();
+    const len = targetShape[dim];
+    const sStride = paddedSrcStrides[dim];
+    const oStride = outStrides[dim];
+    for (let i = 0; i < len; i++) {
+      copyRecursive(dim + 1, srcBase + i * sStride, outBase + i * oStride);
     }
   }
-  iterate([], 0);
-  return createNdArray(outBuf, targetShape);
+
+  copyRecursive(0, srcOff, 0);
+  return createNdArray(outBuf, targetShape.slice());
 }
 
-/**
- * Sum over dimensions that were expanded from originalShape to expandedShape.
- * Used in the backward of expandNdArray.
- */
 function squeezeToRank(shape: number[], targetRank: number): number[] | null {
   if (shape.length < targetRank) return null;
   if (shape.length === targetRank) return shape;
   const extra = shape.length - targetRank;
 
-  let result = [...shape];
+  let result = shape.slice();
   let removed = 0;
   for (let i = 0; i < result.length && removed < extra; i++) {
     if (result[i] === 1) {
@@ -693,7 +799,7 @@ function squeezeToRank(shape: number[], targetRank: number): number[] | null {
   }
   if (removed === extra) return result;
 
-  result = [...shape];
+  result = shape.slice();
   removed = 0;
   for (let i = result.length - 1; i >= 0 && removed < extra; i--) {
     if (result[i] === 1) {
@@ -706,7 +812,7 @@ function squeezeToRank(shape: number[], targetRank: number): number[] | null {
   return null;
 }
 
-export function broadcastNdArray(nd: any, targetShape: number[]): any {
+export function broadcastNdArray(nd: any, targetShape: number[]): NDArray {
   if (arraysEqual(nd.shape, targetShape)) return nd;
   if (!isCompatibleBroadcast(nd.shape, targetShape)) {
     if (nd.shape.length > targetShape.length) {
@@ -721,71 +827,57 @@ export function broadcastNdArray(nd: any, targetShape: number[]): any {
   return expandNdArray(nd, targetShape);
 }
 
-export function arraysEqual(a: number[], b: number[]): boolean {
-  if (a.length !== b.length) return false;
-  return a.every((v, i) => v === b[i]);
-}
-
 /**
- * Sum an ndarray along the specified dimension.
+ * Sum an ndarray along the specified dimension using flat stride loops.
  */
-export function sumAlongDimNdArray(nd: any, dim?: number | null, keepdim = false): any {
+export function sumAlongDimNdArray(nd: any, dim?: number | null, keepdim = false): NDArray {
+  const data = nd.data;
+  const offset = nd.offset;
   if (dim === null || dim === undefined) {
     let total = 0;
-    for (let i = 0; i < nd.data.length; i++) {
-      total += nd.data[i + nd.offset];
+    for (let i = 0; i < data.length; i++) {
+      total += data[offset + i];
     }
-    const scalar = createNdArray(new Float32Array([total]), []);
-    if (keepdim) {
-      return createNdArray(scalar.data, new Array(nd.shape.length).fill(1));
-    }
-    return scalar;
+    const outShape = keepdim ? new Array<number>(nd.shape.length).fill(1) : [];
+    return createNdArray(new Float32Array([total]), outShape);
   }
   const d = normalizeDim(dim, nd.shape.length);
-  const newShape: number[] = Array.from(nd.shape);
-  newShape[d] = 1;
-  const outSize = getShapeSize(newShape);
-  const outBuf = new Float32Array(outSize).fill(0);
-  const outStrides = computeRowMajorStrides(newShape);
+  const { outerSize, dimSize, innerSize } = getAxisStrides(nd.shape, d);
+  const outBuf = new Float32Array(outerSize * innerSize);
+  const outerStride = dimSize * innerSize;
 
-  function iterate(pos: number[], cd: number) {
-    if (cd === newShape.length) {
-      let outIdx = 0;
-      for (let i = 0; i < pos.length; i++) {
-        outIdx += pos[i] * outStrides[i];
+  for (let outer = 0; outer < outerSize; outer++) {
+    const outBase = outer * innerSize;
+    const inOuterBase = offset + outer * outerStride;
+    for (let k = 0; k < dimSize; k++) {
+      const rowBase = inOuterBase + k * innerSize;
+      for (let inner = 0; inner < innerSize; inner++) {
+        outBuf[outBase + inner] += data[rowBase + inner];
       }
-      for (let k = 0; k < nd.shape[d]; k++) {
-        const srcPos = [...pos];
-        srcPos[d] = k;
-        let srcIdx = nd.offset;
-        for (let i = 0; i < srcPos.length; i++) {
-          srcIdx += srcPos[i] * nd.strides[i];
-        }
-        outBuf[outIdx] += nd.data[srcIdx];
-      }
-      return;
-    }
-    for (let i = 0; i < newShape[cd]; i++) {
-      pos.push(i);
-      iterate(pos, cd + 1);
-      pos.pop();
     }
   }
-  iterate([], 0);
-  const result = createNdArray(outBuf, newShape);
-  if (keepdim) return result;
-  if (nd.shape.length === 1) return createNdArray(result.data, []);
-  return squeezeNdArray(result, d);
+
+  if (keepdim) {
+    const keptShape = nd.shape.slice();
+    keptShape[d] = 1;
+    return createNdArray(outBuf, keptShape);
+  }
+  if (nd.shape.length === 1) {
+    return createNdArray(outBuf, []);
+  }
+  return createNdArray(outBuf, [...nd.shape.slice(0, d), ...nd.shape.slice(d + 1)]);
 }
 
 /**
- * Concatenate a list of ndarrays along the given dimension.
+ * Concatenate a list of ndarrays along the given dimension using contiguous block copies.
  */
-export function concatNdArray(nds: any[], dim: number): any {
+export function concatNdArray(nds: any[], dim: number): NDArray {
   if (nds.length === 0) throw new Error('concatNdArray requires at least one ndarray');
-  const refShape = nds[0].shape;
+  const refShape: number[] = nds[0].shape;
   const ndim = refShape.length;
   const d = normalizeDim(dim, ndim);
+  let totalDimSize = refShape[d];
+
   for (let i = 1; i < nds.length; i++) {
     const shape = nds[i].shape;
     if (shape.length !== ndim) throw new Error('All ndarrays must have the same rank for concat');
@@ -794,106 +886,74 @@ export function concatNdArray(nds: any[], dim: number): any {
         throw new Error(`Concat shape mismatch at dim ${j}: ${shape[j]} vs ${refShape[j]}`);
       }
     }
+    totalDimSize += shape[d];
   }
-  const outShape = [...refShape];
-  outShape[d] = nds.reduce((sum, nd) => sum + nd.shape[d], 0);
-  const outSize = getShapeSize(outShape);
-  const outBuf = new Float32Array(outSize).fill(0);
-  const outStrides = computeRowMajorStrides(outShape);
 
-  let offset = 0;
-  for (const nd of nds) {
-    copyNdArrayInto(nd, outBuf, outShape, outStrides, d, offset);
-    offset += nd.shape[d];
+  const outShape = refShape.slice();
+  outShape[d] = totalDimSize;
+  const { outerSize, innerSize } = getAxisStrides(refShape, d);
+  const outOuterStride = totalDimSize * innerSize;
+  const outBuf = new Float32Array(outerSize * outOuterStride);
+
+  let dimOffset = 0;
+  for (let t = 0; t < nds.length; t++) {
+    const nd = nds[t];
+    const tData: Float32Array = nd.data;
+    const tOff: number = nd.offset;
+    const blockLen = nd.shape[d] * innerSize;
+    const outSliceOffset = dimOffset * innerSize;
+    for (let outer = 0; outer < outerSize; outer++) {
+      const srcStart = tOff + outer * blockLen;
+      const dstStart = outer * outOuterStride + outSliceOffset;
+      outBuf.set(tData.subarray(srcStart, srcStart + blockLen), dstStart);
+    }
+    dimOffset += nd.shape[d];
   }
+
   return createNdArray(outBuf, outShape);
 }
 
-function copyNdArrayInto(
-  nd: any,
-  outBuf: Float32Array,
-  outShape: number[],
-  outStrides: number[],
-  dim: number,
-  offset: number
-): void {
-  function iterate(pos: number[], d: number) {
-    if (d === nd.shape.length) {
-      const outPos = [...pos];
-      outPos[dim] = offset + outPos[dim];
-      let outIdx = 0;
-      for (let i = 0; i < outPos.length; i++) {
-        outIdx += outPos[i] * outStrides[i];
-      }
-      let srcIdx = 0;
-      for (let i = 0; i < pos.length; i++) {
-        srcIdx += pos[i] * nd.strides[i];
-      }
-      outBuf[outIdx] = nd.data[srcIdx + nd.offset];
-      return;
-    }
-    for (let i = 0; i < nd.shape[d]; i++) {
-      pos.push(i);
-      iterate(pos, d + 1);
-      pos.pop();
-    }
-  }
-  iterate([], 0);
-}
-
 /**
- * Slice an ndarray along a dimension [start, end).
+ * Slice an ndarray along a dimension [start, end) using contiguous block copies.
  */
-export function sliceNdArray(nd: any, dim: number, start: number, end: number): any {
+export function sliceNdArray(nd: any, dim: number, start: number, end: number): NDArray {
   const d = normalizeDim(dim, nd.shape.length);
   if (start < 0 || end > nd.shape[d] || start >= end) {
     throw new Error(`Invalid slice range [${start}, ${end}) on dim ${d} of size ${nd.shape[d]}`);
   }
-  const newShape = [...nd.shape];
-  newShape[d] = end - start;
-  const outSize = getShapeSize(newShape);
-  const outBuf = new Float32Array(outSize);
-  const outStrides = computeRowMajorStrides(newShape);
+  const newShape = nd.shape.slice();
+  const sliceLen = end - start;
+  newShape[d] = sliceLen;
 
-  function iterate(pos: number[], cd: number) {
-    if (cd === newShape.length) {
-      const srcPos = [...pos];
-      srcPos[d] = start + pos[d];
-      let srcIdx = 0;
-      for (let i = 0; i < srcPos.length; i++) {
-        srcIdx += srcPos[i] * nd.strides[i];
-      }
-      let outIdx = 0;
-      for (let i = 0; i < pos.length; i++) {
-        outIdx += pos[i] * outStrides[i];
-      }
-      outBuf[outIdx] = nd.data[srcIdx + nd.offset];
-      return;
-    }
-    for (let i = 0; i < newShape[cd]; i++) {
-      pos.push(i);
-      iterate(pos, cd + 1);
-      pos.pop();
-    }
+  const { outerSize, dimSize, innerSize } = getAxisStrides(nd.shape, d);
+  const inOuterStride = dimSize * innerSize;
+  const outOuterStride = sliceLen * innerSize;
+  const startOffset = start * innerSize;
+  const outBuf = new Float32Array(outerSize * outOuterStride);
+  const srcData: Float32Array = nd.data;
+  const srcOff: number = nd.offset;
+
+  for (let outer = 0; outer < outerSize; outer++) {
+    const srcStart = srcOff + outer * inOuterStride + startOffset;
+    outBuf.set(srcData.subarray(srcStart, srcStart + outOuterStride), outer * outOuterStride);
   }
-  iterate([], 0);
   return createNdArray(outBuf, newShape);
 }
 
 /**
  * Split an ndarray evenly into n parts along a dimension.
  */
-export function splitNdArray(nd: any, dim: number, n: number): any[] {
+export function splitNdArray(nd: any, dim: number, n: number): NDArray[] {
   const d = normalizeDim(dim, nd.shape.length);
   const dimSize = nd.shape[d];
   if (dimSize % n !== 0) {
     throw new Error(`Cannot split dim ${d} of size ${dimSize} into ${n} equal parts`);
   }
   const chunk = dimSize / n;
-  const results: any[] = [];
+  const results = new Array<NDArray>(n);
   for (let i = 0; i < n; i++) {
     const start = i * chunk;
-    results.push(sliceNdArray(nd, d, start, start + chunk));
+    results[i] = sliceNdArray(nd, d, start, start + chunk);
   }
   return results;
 }
@@ -901,7 +961,7 @@ export function splitNdArray(nd: any, dim: number, n: number): any[] {
 /**
  * Stack a list of ndarrays along a new dimension.
  */
-export function stackNdArray(nds: any[], dim: number): any {
+export function stackNdArray(nds: any[], dim: number): NDArray {
   if (nds.length === 0) throw new Error('stackNdArray requires at least one ndarray');
   const ndim = nds[0].shape.length;
   const d = dim < 0 ? dim + ndim + 1 : dim;
@@ -916,9 +976,13 @@ export function stackNdArray(nds: any[], dim: number): any {
 }
 
 export function computeBroadcastShape(shapes: number[][]): number[] {
-  const maxRank = Math.max(...shapes.map(s => s.length));
-  const result = new Array(maxRank).fill(1);
-  for (const shape of shapes) {
+  let maxRank = 0;
+  for (let i = 0; i < shapes.length; i++) {
+    if (shapes[i].length > maxRank) maxRank = shapes[i].length;
+  }
+  const result = new Array<number>(maxRank).fill(1);
+  for (let sIdx = 0; sIdx < shapes.length; sIdx++) {
+    const shape = shapes[sIdx];
     const offset = maxRank - shape.length;
     for (let i = 0; i < shape.length; i++) {
       const s = shape[i];
@@ -937,8 +1001,32 @@ export function computeBroadcastShape(shapes: number[][]): number[] {
 /**
  * Sum a broadcasted gradient back to a target shape, matching PyTorch's sum_to_size.
  */
-export function sumToShapeNdArray(grad: any, targetShape: number[]): any {
+export function sumToShapeNdArray(grad: any, targetShape: number[]): NDArray {
   if (arraysEqual(grad.shape, targetShape)) return grad;
+
+  // Fast path: reducing to a single-element tensor (e.g. scalar or [1] bias)
+  const targetSize = getShapeSize(targetShape);
+  if (targetSize === 1) {
+    let total = 0;
+    const gData = grad.data;
+    for (let i = 0; i < gData.length; i++) total += gData[i];
+    return createNdArray(new Float32Array([total]), targetShape.slice());
+  }
+
+  // Fast path: suffix reduction (e.g. [B, L, D] -> [D] or [1, D]) in a single flat pass
+  if (isSuffixBroadcast(targetShape, grad.shape)) {
+    const outBuf = new Float32Array(targetSize);
+    const gData = grad.data;
+    const outer = gData.length / targetSize;
+    for (let o = 0; o < outer; o++) {
+      const base = o * targetSize;
+      for (let j = 0; j < targetSize; j++) {
+        outBuf[j] += gData[base + j];
+      }
+    }
+    return createNdArray(outBuf, targetShape.slice());
+  }
+
   const offset = grad.shape.length - targetShape.length;
   let result = grad;
   for (let i = 0; i < targetShape.length; i++) {
@@ -952,10 +1040,7 @@ export function sumToShapeNdArray(grad: any, targetShape: number[]): any {
     result = sumAlongDimNdArray(result, 0, true);
   }
   if (targetShape.length < result.shape.length) {
-    const extra = result.shape.length - targetShape.length;
-    for (let i = 0; i < extra; i++) {
-      result = squeezeNdArray(result, 0);
-    }
+    return createNdArray(result.data, targetShape.slice());
   }
   return result;
 }
@@ -963,15 +1048,18 @@ export function sumToShapeNdArray(grad: any, targetShape: number[]): any {
 /**
  * Element-wise masked selection: cond ? a : b, with broadcasting.
  */
-export function whereNdArray(cond: any, a: any, b: any): any {
+export function whereNdArray(cond: any, a: any, b: any): NDArray {
   const shape = computeBroadcastShape([cond.shape, a.shape, b.shape]);
   const condB = broadcastNdArray(cond, shape);
   const aB = broadcastNdArray(a, shape);
   const bB = broadcastNdArray(b, shape);
   const size = aB.data.length;
   const outBuf = new Float32Array(size);
+  const cData = condB.data;
+  const aData = aB.data;
+  const bData = bB.data;
   for (let i = 0; i < size; i++) {
-    outBuf[i] = condB.data[i] ? aB.data[i] : bB.data[i];
+    outBuf[i] = cData[i] ? aData[i] : bData[i];
   }
   return createNdArray(outBuf, shape);
 }
@@ -979,224 +1067,252 @@ export function whereNdArray(cond: any, a: any, b: any): any {
 /**
  * Element-wise clamp to [min, max].
  */
-export function clampNdArray(nd: any, min: number, max: number): any {
-  const size = nd.data.length;
+export function clampNdArray(nd: any, min: number, max: number): NDArray {
+  const data = nd.data;
+  const size = data.length;
   const outBuf = new Float32Array(size);
   for (let i = 0; i < size; i++) {
-    outBuf[i] = Math.min(max, Math.max(min, nd.data[i]));
+    const v = data[i];
+    outBuf[i] = v < min ? min : v > max ? max : v;
   }
-  return createNdArray(outBuf, Array.from(nd.shape));
+  return createNdArray(outBuf, nd.shape.slice());
 }
 
 // ============================================================================
 // Element-wise Math Functions
 // ============================================================================
 
-export function powNdArray(nd: any, p: number): any {
-  const size = nd.data.length;
+export function powNdArray(nd: any, p: number): NDArray {
+  const data = nd.data;
+  const size = data.length;
   const outBuf = new Float32Array(size);
-  for (let i = 0; i < size; i++) {
-    outBuf[i] = Math.pow(nd.data[i], p);
+  if (p === 2) {
+    for (let i = 0; i < size; i++) {
+      const v = data[i];
+      outBuf[i] = v * v;
+    }
+  } else {
+    for (let i = 0; i < size; i++) {
+      outBuf[i] = Math.pow(data[i], p);
+    }
   }
-  return createNdArray(outBuf, Array.from(nd.shape));
+  return createNdArray(outBuf, nd.shape.slice());
 }
 
-export function expNdArray(nd: any): any {
-  const size = nd.data.length;
+export function expNdArray(nd: any): NDArray {
+  const data = nd.data;
+  const size = data.length;
   const outBuf = new Float32Array(size);
   for (let i = 0; i < size; i++) {
-    outBuf[i] = Math.exp(nd.data[i]);
+    outBuf[i] = Math.exp(data[i]);
   }
-  return createNdArray(outBuf, Array.from(nd.shape));
+  return createNdArray(outBuf, nd.shape.slice());
 }
 
-export function logNdArray(nd: any): any {
-  const size = nd.data.length;
+export function logNdArray(nd: any): NDArray {
+  const data = nd.data;
+  const size = data.length;
   const outBuf = new Float32Array(size);
   for (let i = 0; i < size; i++) {
-    outBuf[i] = Math.log(nd.data[i]);
+    outBuf[i] = Math.log(data[i]);
   }
-  return createNdArray(outBuf, Array.from(nd.shape));
+  return createNdArray(outBuf, nd.shape.slice());
 }
 
-export function sqrtNdArray(nd: any): any {
-  const size = nd.data.length;
+export function sqrtNdArray(nd: any): NDArray {
+  const data = nd.data;
+  const size = data.length;
   const outBuf = new Float32Array(size);
   for (let i = 0; i < size; i++) {
-    outBuf[i] = Math.sqrt(nd.data[i]);
+    outBuf[i] = Math.sqrt(data[i]);
   }
-  return createNdArray(outBuf, Array.from(nd.shape));
+  return createNdArray(outBuf, nd.shape.slice());
 }
 
-export function absNdArray(nd: any): any {
-  const size = nd.data.length;
+export function absNdArray(nd: any): NDArray {
+  const data = nd.data;
+  const size = data.length;
   const outBuf = new Float32Array(size);
   for (let i = 0; i < size; i++) {
-    outBuf[i] = Math.abs(nd.data[i]);
+    outBuf[i] = Math.abs(data[i]);
   }
-  return createNdArray(outBuf, Array.from(nd.shape));
+  return createNdArray(outBuf, nd.shape.slice());
 }
 
 // ============================================================================
 // Activation Functions
 // ============================================================================
 
-export function geluNdArray(nd: any): any {
-  const size = nd.data.length;
+const SQRT_2_OVER_PI = Math.sqrt(2.0 / Math.PI);
+
+export function geluNdArray(nd: any): NDArray {
+  const data = nd.data;
+  const size = data.length;
   const outBuf = new Float32Array(size);
-  const sqrt2OverPi = Math.sqrt(2.0 / Math.PI);
   for (let i = 0; i < size; i++) {
-    const x = nd.data[i];
-    const c = sqrt2OverPi * (x + 0.044715 * x * x * x);
+    const x = data[i];
+    const c = SQRT_2_OVER_PI * (x + 0.044715 * x * x * x);
     outBuf[i] = 0.5 * x * (1.0 + Math.tanh(c));
   }
-  return createNdArray(outBuf, Array.from(nd.shape));
+  return createNdArray(outBuf, nd.shape.slice());
 }
 
-export function geluGradNdArray(gradOut: any, x: any): any {
-  const size = gradOut.data.length;
+export function geluGradNdArray(gradOut: any, x: any): NDArray {
+  const gData = gradOut.data;
+  const xData = x.data;
+  const size = gData.length;
   const outBuf = new Float32Array(size);
-  const sqrt2OverPi = Math.sqrt(2.0 / Math.PI);
   for (let i = 0; i < size; i++) {
-    const xv = x.data[i];
-    const c = sqrt2OverPi * (xv + 0.044715 * xv * xv * xv);
+    const xv = xData[i];
+    const xv2 = xv * xv;
+    const c = SQRT_2_OVER_PI * (xv + 0.044715 * xv2 * xv);
     const tanhC = Math.tanh(c);
     const sech2 = 1.0 - tanhC * tanhC;
-    const dCdx = sqrt2OverPi * (1.0 + 3.0 * 0.044715 * xv * xv);
+    const dCdx = SQRT_2_OVER_PI * (1.0 + 0.134145 * xv2);
     const dgelu = 0.5 * (1.0 + tanhC) + 0.5 * xv * sech2 * dCdx;
-    outBuf[i] = gradOut.data[i] * dgelu;
+    outBuf[i] = gData[i] * dgelu;
   }
-  return createNdArray(outBuf, Array.from(gradOut.shape));
+  return createNdArray(outBuf, gradOut.shape.slice());
 }
 
-export function sigmoidNdArray(nd: any): any {
-  const size = nd.data.length;
+export function sigmoidNdArray(nd: any): NDArray {
+  const data = nd.data;
+  const size = data.length;
   const outBuf = new Float32Array(size);
   for (let i = 0; i < size; i++) {
-    outBuf[i] = 1.0 / (1.0 + Math.exp(-nd.data[i]));
+    outBuf[i] = 1.0 / (1.0 + Math.exp(-data[i]));
   }
-  return createNdArray(outBuf, Array.from(nd.shape));
+  return createNdArray(outBuf, nd.shape.slice());
 }
 
-export function sigmoidGradNdArray(gradOut: any, x: any): any {
-  const size = gradOut.data.length;
+export function sigmoidGradNdArray(gradOut: any, out: any): NDArray {
+  const gData = gradOut.data;
+  const oData = out.data;
+  const size = gData.length;
   const outBuf = new Float32Array(size);
   for (let i = 0; i < size; i++) {
-    const s = 1.0 / (1.0 + Math.exp(-x.data[i]));
-    outBuf[i] = gradOut.data[i] * s * (1.0 - s);
+    const s = oData[i];
+    outBuf[i] = gData[i] * s * (1.0 - s);
   }
-  return createNdArray(outBuf, Array.from(gradOut.shape));
+  return createNdArray(outBuf, gradOut.shape.slice());
 }
 
-export function tanhNdArray(nd: any): any {
-  const size = nd.data.length;
+export function tanhNdArray(nd: any): NDArray {
+  const data = nd.data;
+  const size = data.length;
   const outBuf = new Float32Array(size);
   for (let i = 0; i < size; i++) {
-    outBuf[i] = Math.tanh(nd.data[i]);
+    outBuf[i] = Math.tanh(data[i]);
   }
-  return createNdArray(outBuf, Array.from(nd.shape));
+  return createNdArray(outBuf, nd.shape.slice());
 }
 
-export function tanhGradNdArray(gradOut: any, x: any): any {
-  const size = gradOut.data.length;
+export function tanhGradNdArray(gradOut: any, out: any): NDArray {
+  const gData = gradOut.data;
+  const oData = out.data;
+  const size = gData.length;
   const outBuf = new Float32Array(size);
   for (let i = 0; i < size; i++) {
-    const t = Math.tanh(x.data[i]);
-    outBuf[i] = gradOut.data[i] * (1.0 - t * t);
+    const t = oData[i];
+    outBuf[i] = gData[i] * (1.0 - t * t);
   }
-  return createNdArray(outBuf, Array.from(gradOut.shape));
+  return createNdArray(outBuf, gradOut.shape.slice());
 }
 
-function posFromOuterIndex(outer: number, shape: number[], d: number): number[] {
-  const pos: number[] = new Array(shape.length).fill(0);
-  let tmp = outer;
-  for (let i = shape.length - 1; i >= 0; i--) {
-    if (i === d) continue;
-    pos[i] = tmp % shape[i];
-    tmp = Math.floor(tmp / shape[i]);
-  }
-  return pos;
-}
-
-export function softmaxNdArray(nd: any, dim: number): any {
+export function softmaxNdArray(nd: any, dim: number): NDArray {
   const d = normalizeDim(dim, nd.shape.length);
-  const outShape: number[] = Array.from(nd.shape);
-  const outSize = getShapeSize(outShape);
-  const outBuf = new Float32Array(outSize);
-  const outStrides = computeRowMajorStrides(outShape);
+  const outShape: number[] = nd.shape.slice();
+  const { outerSize, dimSize, innerSize } = getAxisStrides(outShape, d);
+  const outBuf = new Float32Array(outerSize * dimSize * innerSize);
+  const data: Float32Array = nd.data;
+  const off: number = nd.offset;
+  const outerStride = dimSize * innerSize;
 
-  const outerSize = outSize / outShape[d];
-  const dimSize = outShape[d];
-
-  for (let outer = 0; outer < outerSize; outer++) {
-    const pos = posFromOuterIndex(outer, outShape, d);
-    let maxVal = -Infinity;
-    for (let k = 0; k < dimSize; k++) {
-      pos[d] = k;
-      let srcIdx = nd.offset;
-      for (let i = 0; i < pos.length; i++) srcIdx += pos[i] * nd.strides[i];
-      maxVal = Math.max(maxVal, nd.data[srcIdx]);
+  if (innerSize === 1) {
+    // Contiguous last-dimension fast path
+    for (let outer = 0; outer < outerSize; outer++) {
+      const base = outer * dimSize;
+      const srcBase = off + base;
+      let maxVal = -Infinity;
+      for (let k = 0; k < dimSize; k++) {
+        const v = data[srcBase + k];
+        if (v > maxVal) maxVal = v;
+      }
+      let sumExp = 0;
+      for (let k = 0; k < dimSize; k++) {
+        const e = Math.exp(data[srcBase + k] - maxVal);
+        outBuf[base + k] = e;
+        sumExp += e;
+      }
+      const invSum = 1.0 / sumExp;
+      for (let k = 0; k < dimSize; k++) {
+        outBuf[base + k] *= invSum;
+      }
     }
-    let sumExp = 0;
-    const expVals = new Float32Array(dimSize);
-    for (let k = 0; k < dimSize; k++) {
-      pos[d] = k;
-      let srcIdx = nd.offset;
-      for (let i = 0; i < pos.length; i++) srcIdx += pos[i] * nd.strides[i];
-      const e = Math.exp(nd.data[srcIdx] - maxVal);
-      expVals[k] = e;
-      sumExp += e;
-    }
-    for (let k = 0; k < dimSize; k++) {
-      pos[d] = k;
-      let outIdx = 0;
-      for (let i = 0; i < pos.length; i++) outIdx += pos[i] * outStrides[i];
-      outBuf[outIdx] = expVals[k] / sumExp;
+  } else {
+    for (let outer = 0; outer < outerSize; outer++) {
+      const outerBase = outer * outerStride;
+      for (let inner = 0; inner < innerSize; inner++) {
+        const base = outerBase + inner;
+        let maxVal = -Infinity;
+        for (let k = 0; k < dimSize; k++) {
+          const v = data[off + base + k * innerSize];
+          if (v > maxVal) maxVal = v;
+        }
+        let sumExp = 0;
+        for (let k = 0; k < dimSize; k++) {
+          const idx = base + k * innerSize;
+          const e = Math.exp(data[off + idx] - maxVal);
+          outBuf[idx] = e;
+          sumExp += e;
+        }
+        const invSum = 1.0 / sumExp;
+        for (let k = 0; k < dimSize; k++) {
+          outBuf[base + k * innerSize] *= invSum;
+        }
+      }
     }
   }
   return createNdArray(outBuf, outShape);
 }
 
-export function softmaxGradNdArray(gradOutput: any, out: any, dim: number): any {
+export function softmaxGradNdArray(gradOutput: any, out: any, dim: number): NDArray {
   const d = normalizeDim(dim, out.shape.length);
-  const outShape: number[] = Array.from(out.shape);
-  const outSize = getShapeSize(outShape);
-  const outBuf = new Float32Array(outSize);
-  const outStrides = computeRowMajorStrides(outShape);
+  const outShape: number[] = out.shape.slice();
+  const { outerSize, dimSize, innerSize } = getAxisStrides(outShape, d);
+  const outBuf = new Float32Array(outerSize * dimSize * innerSize);
+  const oData: Float32Array = out.data;
+  const gData: Float32Array = gradOutput.data;
+  const oOff: number = out.offset;
+  const gOff: number = gradOutput.offset;
+  const outerStride = dimSize * innerSize;
 
-  const outerSize = outSize / outShape[d];
-  const dimSize = outShape[d];
-
-  const weightedSum = new Float32Array(outerSize).fill(0);
-  for (let outer = 0; outer < outerSize; outer++) {
-    const pos = posFromOuterIndex(outer, outShape, d);
-    let sum = 0;
-    for (let k = 0; k < dimSize; k++) {
-      pos[d] = k;
-      let outIdx = 0;
-      let gradIdx = 0;
-      for (let i = 0; i < pos.length; i++) {
-        outIdx += pos[i] * outStrides[i];
-        gradIdx += pos[i] * gradOutput.strides[i];
+  if (innerSize === 1) {
+    for (let outer = 0; outer < outerSize; outer++) {
+      const base = outer * dimSize;
+      let dot = 0;
+      for (let k = 0; k < dimSize; k++) {
+        dot += oData[oOff + base + k] * gData[gOff + base + k];
       }
-      sum += out.data[outIdx + out.offset] * gradOutput.data[gradIdx + gradOutput.offset];
+      for (let k = 0; k < dimSize; k++) {
+        outBuf[base + k] = oData[oOff + base + k] * (gData[gOff + base + k] - dot);
+      }
     }
-    weightedSum[outer] = sum;
-  }
-
-  for (let outer = 0; outer < outerSize; outer++) {
-    const pos = posFromOuterIndex(outer, outShape, d);
-    for (let k = 0; k < dimSize; k++) {
-      pos[d] = k;
-      let outIdx = 0;
-      let gradIdx = 0;
-      let resIdx = 0;
-      for (let i = 0; i < pos.length; i++) {
-        outIdx += pos[i] * outStrides[i];
-        gradIdx += pos[i] * gradOutput.strides[i];
-        resIdx += pos[i] * outStrides[i];
+  } else {
+    for (let outer = 0; outer < outerSize; outer++) {
+      const outerBase = outer * outerStride;
+      for (let inner = 0; inner < innerSize; inner++) {
+        const base = outerBase + inner;
+        let dot = 0;
+        for (let k = 0; k < dimSize; k++) {
+          const idx = base + k * innerSize;
+          dot += oData[oOff + idx] * gData[gOff + idx];
+        }
+        for (let k = 0; k < dimSize; k++) {
+          const idx = base + k * innerSize;
+          outBuf[idx] = oData[oOff + idx] * (gData[gOff + idx] - dot);
+        }
       }
-      outBuf[resIdx] = out.data[outIdx + out.offset] * (gradOutput.data[gradIdx + gradOutput.offset] - weightedSum[outer]);
     }
   }
   return createNdArray(outBuf, outShape);
@@ -1206,7 +1322,11 @@ export function softmaxGradNdArray(gradOutput: any, out: any, dim: number): any 
 // Loss Functions
 // ============================================================================
 
-export function crossEntropyLossNdArray(logits: any, labels: any): { lossValue: number; gradLogits: any } {
+export function crossEntropyLossNdArray(
+  logits: any,
+  labels: any,
+  computeGrad = true
+): { lossValue: number; gradLogits: NDArray | null } {
   const shape: number[] = logits.shape;
   if (shape.length !== 2) {
     throw new Error('CrossEntropyLoss expects 2D logits [N, C]');
@@ -1216,65 +1336,90 @@ export function crossEntropyLossNdArray(logits: any, labels: any): { lossValue: 
   const logitsFlat = logits.data;
   const labelsFlat = labels.data;
   const eps = 1e-12;
+  const invN = 1.0 / N;
 
-  const softmax = new Float32Array(N * C);
+  const gradBuf = computeGrad ? new Float32Array(N * C) : null;
   let loss = 0;
   for (let i = 0; i < N; i++) {
+    const rowBase = i * C;
     let maxVal = -Infinity;
     for (let j = 0; j < C; j++) {
-      maxVal = Math.max(maxVal, logitsFlat[i * C + j]);
+      const v = logitsFlat[rowBase + j];
+      if (v > maxVal) maxVal = v;
     }
     let sumExp = 0;
     for (let j = 0; j < C; j++) {
-      const e = Math.exp(logitsFlat[i * C + j] - maxVal);
-      softmax[i * C + j] = e;
-      sumExp += e;
-    }
-    for (let j = 0; j < C; j++) {
-      softmax[i * C + j] /= sumExp;
+      sumExp += Math.exp(logitsFlat[rowBase + j] - maxVal);
     }
     const label = Math.round(labelsFlat[i]);
-    loss -= Math.log(Math.max(softmax[i * C + label], eps));
-  }
-  loss /= N;
+    const probLabel = Math.exp(logitsFlat[rowBase + label] - maxVal) / sumExp;
+    loss -= Math.log(Math.max(probLabel, eps));
 
-  const gradBuf = new Float32Array(N * C);
-  for (let i = 0; i < N; i++) {
-    for (let j = 0; j < C; j++) {
-      gradBuf[i * C + j] = softmax[i * C + j] / N;
+    if (gradBuf) {
+      const scale = invN / sumExp;
+      for (let j = 0; j < C; j++) {
+        gradBuf[rowBase + j] = Math.exp(logitsFlat[rowBase + j] - maxVal) * scale;
+      }
+      gradBuf[rowBase + label] -= invN;
     }
-    const label = Math.round(labelsFlat[i]);
-    gradBuf[i * C + label] -= 1.0 / N;
   }
-  return { lossValue: loss, gradLogits: createNdArray(gradBuf, shape) };
+  loss *= invN;
+
+  return {
+    lossValue: loss,
+    gradLogits: gradBuf ? createNdArray(gradBuf, shape.slice()) : null
+  };
 }
 
-export function bceLossNdArray(pred: any, target: any): { lossValue: number; gradPred: any } {
-  const size = pred.data.length;
+export function bceLossNdArray(
+  pred: any,
+  target: any,
+  computeGrad = true
+): { lossValue: number; gradPred: NDArray | null } {
+  const pData = pred.data;
+  const tData = target.data;
+  const size = pData.length;
   const eps = 1e-12;
   let loss = 0;
-  const gradBuf = new Float32Array(size);
+  const gradBuf = computeGrad ? new Float32Array(size) : null;
+  const invSize = 1.0 / size;
   for (let i = 0; i < size; i++) {
-    const p = Math.min(Math.max(pred.data[i], eps), 1 - eps);
-    const t = target.data[i];
-    loss -= (t * Math.log(p) + (1 - t) * Math.log(1 - p));
-    gradBuf[i] = (p - t) / (p * (1 - p) * size);
+    const rawP = pData[i];
+    const p = rawP < eps ? eps : rawP > 1 - eps ? 1 - eps : rawP;
+    const t = tData[i];
+    loss -= t * Math.log(p) + (1 - t) * Math.log(1 - p);
+    if (gradBuf) {
+      gradBuf[i] = ((p - t) / (p * (1 - p))) * invSize;
+    }
   }
-  loss /= size;
-  return { lossValue: loss, gradPred: createNdArray(gradBuf, Array.from(pred.shape)) };
+  return {
+    lossValue: loss * invSize,
+    gradPred: gradBuf ? createNdArray(gradBuf, pred.shape.slice()) : null
+  };
 }
 
-export function l1LossNdArray(pred: any, target: any): { lossValue: number; gradPred: any } {
-  const size = pred.data.length;
+export function l1LossNdArray(
+  pred: any,
+  target: any,
+  computeGrad = true
+): { lossValue: number; gradPred: NDArray | null } {
+  const pData = pred.data;
+  const tData = target.data;
+  const size = pData.length;
   let loss = 0;
-  const gradBuf = new Float32Array(size);
+  const gradBuf = computeGrad ? new Float32Array(size) : null;
+  const invSize = 1.0 / size;
   for (let i = 0; i < size; i++) {
-    const diff = pred.data[i] - target.data[i];
+    const diff = pData[i] - tData[i];
     loss += Math.abs(diff);
-    gradBuf[i] = (diff > 0 ? 1 : diff < 0 ? -1 : 0) / size;
+    if (gradBuf) {
+      gradBuf[i] = (diff > 0 ? invSize : diff < 0 ? -invSize : 0);
+    }
   }
-  loss /= size;
-  return { lossValue: loss, gradPred: createNdArray(gradBuf, Array.from(pred.shape)) };
+  return {
+    lossValue: loss * invSize,
+    gradPred: gradBuf ? createNdArray(gradBuf, pred.shape.slice()) : null
+  };
 }
 
 // ============================================================================
@@ -1282,231 +1427,258 @@ export function l1LossNdArray(pred: any, target: any): { lossValue: number; grad
 // ============================================================================
 
 /**
- * Compute mean and inverse standard deviation over the last n dimensions.
- * Input shape: [..., d_1, ..., d_n]; output shape keeps leading dims and sets last n dims to 1.
+ * LayerNorm forward: normalize over the last n dimensions in a single flat pass per row.
  */
-function computeMomentsOverLastDims(nd: any, n: number): { mean: any; invStd: any } {
-  const shape: number[] = Array.from(nd.shape);
+export function layerNormNdArray(nd: any, n: number): { out: NDArray; mean: NDArray; invStd: NDArray } {
+  const shape: number[] = nd.shape;
   const rank = shape.length;
   if (n <= 0 || n > rank) {
     throw new Error(`Cannot normalize last ${n} dims of a ${rank}-D tensor`);
   }
-  const leadingSize = shape.slice(0, rank - n).reduce((a: number, b: number) => a * b, 1);
-  const normalizedSize = shape.slice(rank - n).reduce((a: number, b: number) => a * b, 1);
+  let leadingSize = 1;
+  for (let i = 0; i < rank - n; i++) leadingSize *= shape[i];
+  let normalizedSize = 1;
+  for (let i = rank - n; i < rank; i++) normalizedSize *= shape[i];
 
-  const x2d = createNdArray(nd.data, [leadingSize, normalizedSize]);
-  const mean2d = meanNdArray(x2d, 1, true);
-  const centered2d = subNdArray(x2d, expandNdArray(mean2d, [leadingSize, normalizedSize]));
-  const var2d = meanNdArray(mulNdArray(centered2d, centered2d), 1, true);
-
+  const xData: Float32Array = nd.data;
+  const outBuf = new Float32Array(leadingSize * normalizedSize);
+  const meanBuf = new Float32Array(leadingSize);
   const invStdBuf = new Float32Array(leadingSize);
-  for (let i = 0; i < leadingSize; i++) {
-    invStdBuf[i] = 1.0 / Math.sqrt(var2d.data[i] + 1e-5);
-  }
-  const invStd2d = createNdArray(invStdBuf, [leadingSize, 1]);
+  const invNorm = 1.0 / normalizedSize;
 
-  const meanShape: number[] = shape.map((s: number, i: number) => (i < rank - n ? s : 1));
+  for (let row = 0; row < leadingSize; row++) {
+    const base = row * normalizedSize;
+    let sum = 0;
+    for (let j = 0; j < normalizedSize; j++) {
+      sum += xData[base + j];
+    }
+    const m = sum * invNorm;
+    meanBuf[row] = m;
+
+    let sumSq = 0;
+    for (let j = 0; j < normalizedSize; j++) {
+      const diff = xData[base + j] - m;
+      sumSq += diff * diff;
+    }
+    const invS = 1.0 / Math.sqrt(sumSq * invNorm + 1e-5);
+    invStdBuf[row] = invS;
+
+    for (let j = 0; j < normalizedSize; j++) {
+      outBuf[base + j] = (xData[base + j] - m) * invS;
+    }
+  }
+
+  const meanShape = shape.map((s: number, i: number) => (i < rank - n ? s : 1));
   return {
-    mean: createNdArray(mean2d.data, meanShape),
-    invStd: createNdArray(invStd2d.data, meanShape)
+    out: createNdArray(outBuf, shape.slice()),
+    mean: createNdArray(meanBuf, meanShape),
+    invStd: createNdArray(invStdBuf, meanShape)
   };
 }
 
 /**
- * LayerNorm forward: normalize over the last n dimensions.
+ * LayerNorm backward: single flat pass per row without intermediate broadcast allocations.
  */
-export function layerNormNdArray(nd: any, n: number): { out: any; mean: any; invStd: any } {
-  const shape: number[] = Array.from(nd.shape);
+export function layerNormGradNdArray(gradOutput: any, x: any, mean: any, invStd: any, n: number): NDArray {
+  const shape: number[] = x.shape;
   const rank = shape.length;
-  const leadingSize = shape.slice(0, rank - n).reduce((a: number, b: number) => a * b, 1);
-  const normalizedSize = shape.slice(rank - n).reduce((a: number, b: number) => a * b, 1);
+  let leadingSize = 1;
+  for (let i = 0; i < rank - n; i++) leadingSize *= shape[i];
+  let normalizedSize = 1;
+  for (let i = rank - n; i < rank; i++) normalizedSize *= shape[i];
 
-  const { mean, invStd } = computeMomentsOverLastDims(nd, n);
-  const centered2d = subNdArray(
-    createNdArray(nd.data, [leadingSize, normalizedSize]),
-    expandNdArray(createNdArray(mean.data, [leadingSize, 1]), [leadingSize, normalizedSize])
-  );
-  const out2d = mulNdArray(centered2d, expandNdArray(createNdArray(invStd.data, [leadingSize, 1]), [leadingSize, normalizedSize]));
-  return { out: createNdArray(out2d.data, shape), mean, invStd };
-}
+  const xData: Float32Array = x.data;
+  const gData: Float32Array = gradOutput.data;
+  const meanData: Float32Array = mean.data;
+  const invStdData: Float32Array = invStd.data;
+  const dxBuf = new Float32Array(leadingSize * normalizedSize);
+  const invNorm = 1.0 / normalizedSize;
 
-/**
- * LayerNorm backward.
- */
-export function layerNormGradNdArray(gradOutput: any, x: any, mean: any, invStd: any, n: number): any {
-  const shape: number[] = Array.from(x.shape);
-  const rank = shape.length;
-  const leadingSize = shape.slice(0, rank - n).reduce((a: number, b: number) => a * b, 1);
-  const normalizedSize = shape.slice(rank - n).reduce((a: number, b: number) => a * b, 1);
+  for (let row = 0; row < leadingSize; row++) {
+    const base = row * normalizedSize;
+    const m = meanData[row];
+    const invS = invStdData[row];
 
-  const x2d = createNdArray(x.data, [leadingSize, normalizedSize]);
-  const mean2d = createNdArray(mean.data, [leadingSize, 1]);
-  const invStd2d = createNdArray(invStd.data, [leadingSize, 1]);
-  const out2d = mulNdArray(
-    subNdArray(x2d, expandNdArray(mean2d, [leadingSize, normalizedSize])),
-    expandNdArray(invStd2d, [leadingSize, normalizedSize])
-  );
-  const gradOutput2d = createNdArray(gradOutput.data, [leadingSize, normalizedSize]);
+    let sumGrad = 0;
+    let sumGradOut = 0;
+    for (let j = 0; j < normalizedSize; j++) {
+      const dy = gData[base + j];
+      const yHat = (xData[base + j] - m) * invS;
+      sumGrad += dy;
+      sumGradOut += dy * yHat;
+    }
+    const meanGrad = sumGrad * invNorm;
+    const meanGradOut = sumGradOut * invNorm;
 
-  const meanGrad = meanNdArray(gradOutput2d, 1, true);
-  const meanGradOut = meanNdArray(mulNdArray(gradOutput2d, out2d), 1, true);
-  const term1 = subNdArray(gradOutput2d, expandNdArray(meanGrad, [leadingSize, normalizedSize]));
-  const term2 = mulNdArray(out2d, expandNdArray(meanGradOut, [leadingSize, normalizedSize]));
-  const dx2d = mulNdArray(
-    expandNdArray(invStd2d, [leadingSize, normalizedSize]),
-    subNdArray(term1, term2)
-  );
-  return createNdArray(dx2d.data, shape);
+    for (let j = 0; j < normalizedSize; j++) {
+      const dy = gData[base + j];
+      const yHat = (xData[base + j] - m) * invS;
+      dxBuf[base + j] = invS * (dy - meanGrad - yHat * meanGradOut);
+    }
+  }
+
+  return createNdArray(dxBuf, shape.slice());
 }
 
 // ============================================================================
 // Reduction Operations
 // ============================================================================
 
-function reduceAlongDimNdArray(
-  nd: any,
-  dim: number,
-  identity: number,
-  reducer: (a: number, b: number) => number
-): any {
-  const d = normalizeDim(dim, nd.shape.length);
-  const newShape: number[] = Array.from(nd.shape);
-  newShape[d] = 1;
-  const outSize = getShapeSize(newShape);
-  const outBuf = new Float32Array(outSize).fill(identity);
-  const outStrides = computeRowMajorStrides(newShape);
-
-  function iterate(pos: number[], cd: number) {
-    if (cd === newShape.length) {
-      let outIdx = 0;
-      for (let i = 0; i < pos.length; i++) {
-        outIdx += pos[i] * outStrides[i];
-      }
-      for (let k = 0; k < nd.shape[d]; k++) {
-        const srcPos = [...pos];
-        srcPos[d] = k;
-        let srcIdx = nd.offset;
-        for (let i = 0; i < srcPos.length; i++) {
-          srcIdx += srcPos[i] * nd.strides[i];
-        }
-        outBuf[outIdx] = reducer(outBuf[outIdx], nd.data[srcIdx]);
-      }
-      return;
-    }
-    for (let i = 0; i < newShape[cd]; i++) {
-      pos.push(i);
-      iterate(pos, cd + 1);
-      pos.pop();
-    }
-  }
-  iterate([], 0);
-  return createNdArray(outBuf, newShape);
-}
-
-export function maxNdArray(nd: any, dim?: number | null, keepdim = false): any {
+export function maxNdArray(nd: any, dim?: number | null, keepdim = false): NDArray {
+  const data = nd.data;
+  const off = nd.offset;
   if (dim === null || dim === undefined) {
     let maxVal = -Infinity;
-    for (let i = 0; i < nd.data.length; i++) {
-      maxVal = Math.max(maxVal, nd.data[i + nd.offset]);
+    for (let i = 0; i < data.length; i++) {
+      const v = data[off + i];
+      if (v > maxVal) maxVal = v;
     }
-    const scalar = createNdArray(new Float32Array([maxVal]), []);
-    if (keepdim) {
-      return createNdArray(scalar.data, new Array(nd.shape.length).fill(1));
-    }
-    return scalar;
+    const outShape = keepdim ? new Array<number>(nd.shape.length).fill(1) : [];
+    return createNdArray(new Float32Array([maxVal]), outShape);
   }
   const d = normalizeDim(dim, nd.shape.length);
-  const result = reduceAlongDimNdArray(nd, d, -Infinity, (a, b) => Math.max(a, b));
-  if (keepdim) return result;
-  if (nd.shape.length === 1) return createNdArray(result.data, []);
-  return squeezeNdArray(result, d);
+  const { outerSize, dimSize, innerSize } = getAxisStrides(nd.shape, d);
+  const outBuf = new Float32Array(outerSize * innerSize).fill(-Infinity);
+  const outerStride = dimSize * innerSize;
+
+  for (let outer = 0; outer < outerSize; outer++) {
+    const outBase = outer * innerSize;
+    const inOuterBase = off + outer * outerStride;
+    for (let k = 0; k < dimSize; k++) {
+      const rowBase = inOuterBase + k * innerSize;
+      for (let inner = 0; inner < innerSize; inner++) {
+        const v = data[rowBase + inner];
+        if (v > outBuf[outBase + inner]) outBuf[outBase + inner] = v;
+      }
+    }
+  }
+
+  if (keepdim) {
+    const keptShape = nd.shape.slice();
+    keptShape[d] = 1;
+    return createNdArray(outBuf, keptShape);
+  }
+  if (nd.shape.length === 1) return createNdArray(outBuf, []);
+  return createNdArray(outBuf, [...nd.shape.slice(0, d), ...nd.shape.slice(d + 1)]);
 }
 
-export function minNdArray(nd: any, dim?: number | null, keepdim = false): any {
+export function minNdArray(nd: any, dim?: number | null, keepdim = false): NDArray {
+  const data = nd.data;
+  const off = nd.offset;
   if (dim === null || dim === undefined) {
     let minVal = Infinity;
-    for (let i = 0; i < nd.data.length; i++) {
-      minVal = Math.min(minVal, nd.data[i + nd.offset]);
+    for (let i = 0; i < data.length; i++) {
+      const v = data[off + i];
+      if (v < minVal) minVal = v;
     }
-    const scalar = createNdArray(new Float32Array([minVal]), []);
-    if (keepdim) {
-      return createNdArray(scalar.data, new Array(nd.shape.length).fill(1));
-    }
-    return scalar;
+    const outShape = keepdim ? new Array<number>(nd.shape.length).fill(1) : [];
+    return createNdArray(new Float32Array([minVal]), outShape);
   }
   const d = normalizeDim(dim, nd.shape.length);
-  const result = reduceAlongDimNdArray(nd, d, Infinity, (a, b) => Math.min(a, b));
-  if (keepdim) return result;
-  if (nd.shape.length === 1) return createNdArray(result.data, []);
-  return squeezeNdArray(result, d);
+  const { outerSize, dimSize, innerSize } = getAxisStrides(nd.shape, d);
+  const outBuf = new Float32Array(outerSize * innerSize).fill(Infinity);
+  const outerStride = dimSize * innerSize;
+
+  for (let outer = 0; outer < outerSize; outer++) {
+    const outBase = outer * innerSize;
+    const inOuterBase = off + outer * outerStride;
+    for (let k = 0; k < dimSize; k++) {
+      const rowBase = inOuterBase + k * innerSize;
+      for (let inner = 0; inner < innerSize; inner++) {
+        const v = data[rowBase + inner];
+        if (v < outBuf[outBase + inner]) outBuf[outBase + inner] = v;
+      }
+    }
+  }
+
+  if (keepdim) {
+    const keptShape = nd.shape.slice();
+    keptShape[d] = 1;
+    return createNdArray(outBuf, keptShape);
+  }
+  if (nd.shape.length === 1) return createNdArray(outBuf, []);
+  return createNdArray(outBuf, [...nd.shape.slice(0, d), ...nd.shape.slice(d + 1)]);
 }
 
-export function meanNdArray(nd: any, dim?: number | null, keepdim = false): any {
+export function meanNdArray(nd: any, dim?: number | null, keepdim = false): NDArray {
+  const data = nd.data;
+  const off = nd.offset;
   if (dim === null || dim === undefined) {
     let total = 0;
-    for (let i = 0; i < nd.data.length; i++) {
-      total += nd.data[i + nd.offset];
+    for (let i = 0; i < data.length; i++) {
+      total += data[off + i];
     }
-    const scalar = createNdArray(new Float32Array([total / nd.data.length]), []);
-    if (keepdim) {
-      return createNdArray(scalar.data, new Array(nd.shape.length).fill(1));
-    }
-    return scalar;
+    const outShape = keepdim ? new Array<number>(nd.shape.length).fill(1) : [];
+    return createNdArray(new Float32Array([total / data.length]), outShape);
   }
   const d = normalizeDim(dim, nd.shape.length);
-  const summed = sumAlongDimNdArray(nd, d, true);
-  const size = nd.shape[d];
-  const outBuf = new Float32Array(summed.data.length);
-  for (let i = 0; i < outBuf.length; i++) {
-    outBuf[i] = summed.data[i] / size;
+  const result = sumAlongDimNdArray(nd, d, keepdim);
+  const invSize = 1.0 / nd.shape[d];
+  const rData = result.data;
+  for (let i = 0; i < rData.length; i++) {
+    rData[i] *= invSize;
   }
-  const result = createNdArray(outBuf, Array.from(summed.shape));
-  if (keepdim) return result;
-  if (nd.shape.length === 1) return createNdArray(result.data, []);
-  return squeezeNdArray(result, d);
+  return result;
 }
 
 // ============================================================================
 // Transpose and BMM
 // ============================================================================
 
-export function transposeNdArray(nd: any, dim1: number, dim2: number): any {
-  const d1 = normalizeDim(dim1, nd.shape.length);
-  const d2 = normalizeDim(dim2, nd.shape.length);
-  const outShape: number[] = Array.from(nd.shape);
+export function transposeNdArray(nd: any, dim1: number, dim2: number): NDArray {
+  const rank = nd.shape.length;
+  const d1 = normalizeDim(dim1, rank);
+  const d2 = normalizeDim(dim2, rank);
+  if (d1 === d2) return cloneNdArray(nd);
+
+  const outShape: number[] = nd.shape.slice();
   outShape[d1] = nd.shape[d2];
   outShape[d2] = nd.shape[d1];
   const outSize = getShapeSize(outShape);
   const outBuf = new Float32Array(outSize);
-  const outStrides = computeRowMajorStrides(outShape);
+  const srcData: Float32Array = nd.data;
+  const srcOff: number = nd.offset;
 
-  function iterate(pos: number[], cd: number) {
-    if (cd === outShape.length) {
-      const srcPos = [...pos];
-      srcPos[d1] = pos[d2];
-      srcPos[d2] = pos[d1];
-      let srcIdx = nd.offset;
-      for (let i = 0; i < srcPos.length; i++) {
-        srcIdx += srcPos[i] * nd.strides[i];
+  // Fast path for 2D transpose
+  if (rank === 2) {
+    const M = nd.shape[0];
+    const N = nd.shape[1];
+    for (let i = 0; i < M; i++) {
+      const rowBase = srcOff + i * N;
+      for (let j = 0; j < N; j++) {
+        outBuf[j * M + i] = srcData[rowBase + j];
       }
-      let outIdx = 0;
-      for (let i = 0; i < pos.length; i++) {
-        outIdx += pos[i] * outStrides[i];
+    }
+    return createNdArray(outBuf, outShape);
+  }
+
+  const permutedSrcStrides = nd.strides.slice();
+  permutedSrcStrides[d1] = nd.strides[d2];
+  permutedSrcStrides[d2] = nd.strides[d1];
+  const outStrides = computeRowMajorStrides(outShape);
+  const lastDim = outShape[rank - 1];
+  const lastSrcStride = permutedSrcStrides[rank - 1];
+
+  function copyTranspose(dim: number, srcBase: number, outBase: number): void {
+    if (dim === rank - 1) {
+      for (let i = 0; i < lastDim; i++) {
+        outBuf[outBase + i] = srcData[srcBase + i * lastSrcStride];
       }
-      outBuf[outIdx] = nd.data[srcIdx];
       return;
     }
-    for (let i = 0; i < outShape[cd]; i++) {
-      pos.push(i);
-      iterate(pos, cd + 1);
-      pos.pop();
+    const len = outShape[dim];
+    const sStride = permutedSrcStrides[dim];
+    const oStride = outStrides[dim];
+    for (let i = 0; i < len; i++) {
+      copyTranspose(dim + 1, srcBase + i * sStride, outBase + i * oStride);
     }
   }
-  iterate([], 0);
+
+  copyTranspose(0, srcOff, 0);
   return createNdArray(outBuf, outShape);
 }
 
-export function bmmNdArray(a: any, b: any): any {
+export function bmmNdArray(a: any, b: any): NDArray {
   const shapeA = a.shape;
   const shapeB = b.shape;
   if (shapeA.length !== 3 || shapeB.length !== 3) {
@@ -1519,13 +1691,27 @@ export function bmmNdArray(a: any, b: any): any {
   if (shapeB[0] !== B || shapeB[1] !== K) {
     throw new Error(`BMM shape mismatch: ${JSON.stringify(shapeA)} vs ${JSON.stringify(shapeB)}`);
   }
-  const outBuf = new Float32Array(B * M * N).fill(0);
+  const outBuf = new Float32Array(B * M * N);
+  const aData = a.data;
+  const bData = b.data;
+  const aOff = a.offset;
+  const bOff = b.offset;
+  const mk = M * K;
+  const kn = K * N;
+  const mn = M * N;
+
   for (let batch = 0; batch < B; batch++) {
+    const aBatch = aOff + batch * mk;
+    const bBatch = bOff + batch * kn;
+    const outBatch = batch * mn;
     for (let i = 0; i < M; i++) {
+      const aRow = aBatch + i * K;
+      const outRow = outBatch + i * N;
       for (let k = 0; k < K; k++) {
-        const aik = a.get(batch, i, k);
+        const aik = aData[aRow + k];
+        const bRow = bBatch + k * N;
         for (let j = 0; j < N; j++) {
-          outBuf[batch * M * N + i * N + j] += aik * b.get(batch, k, j);
+          outBuf[outRow + j] += aik * bData[bRow + j];
         }
       }
     }
@@ -1537,7 +1723,7 @@ export function bmmNdArray(a: any, b: any): any {
 // Dropout
 // ============================================================================
 
-export function dropoutNdArray(nd: any, p: number, isTraining: boolean): { out: any; mask: Float32Array } {
+export function dropoutNdArray(nd: any, p: number, isTraining: boolean): { out: NDArray; mask: Float32Array } {
   const size = nd.data.length;
   const mask = new Float32Array(size).fill(1);
   if (!isTraining || p <= 0) {
@@ -1545,71 +1731,59 @@ export function dropoutNdArray(nd: any, p: number, isTraining: boolean): { out: 
   }
   if (p >= 1) {
     mask.fill(0);
-    return { out: createNdArray(new Float32Array(size), Array.from(nd.shape)), mask };
+    return { out: createNdArray(new Float32Array(size), nd.shape.slice()), mask };
   }
   const outBuf = new Float32Array(size);
   const scale = 1.0 / (1.0 - p);
+  const data = nd.data;
   for (let i = 0; i < size; i++) {
-    const keep = Math.random() >= p;
-    mask[i] = keep ? 1 : 0;
-    outBuf[i] = nd.data[i] * mask[i] * scale;
+    const keep = Math.random() >= p ? 1 : 0;
+    mask[i] = keep;
+    outBuf[i] = data[i] * keep * scale;
   }
-  return { out: createNdArray(outBuf, Array.from(nd.shape)), mask };
+  return { out: createNdArray(outBuf, nd.shape.slice()), mask };
 }
 
 // ============================================================================
 // Scaled Dot Product Attention
 // ============================================================================
 
-function transposeLastTwoNdArray(nd: any): any {
+function transposeLastTwoNdArray(nd: any): NDArray {
   const rank = nd.shape.length;
   if (rank < 2) throw new Error('transposeLastTwoNdArray requires at least 2D tensor');
   return transposeNdArray(nd, rank - 2, rank - 1);
 }
 
-function applyCausalMaskNdArray(scores: any): any {
-  const shape: number[] = Array.from(scores.shape);
+function applyCausalMaskInPlace(scores: NDArray): void {
+  const shape = scores.shape;
   const rank = shape.length;
-  if (rank < 2) throw new Error('applyCausalMaskNdArray requires at least 2D tensor');
-  const Lq = shape[rank - 2] as number;
-  const Lk = shape[rank - 1] as number;
+  const Lq = shape[rank - 2];
+  const Lk = shape[rank - 1];
   const outerSize = scores.data.length / (Lq * Lk);
-  const outBuf = new Float32Array(scores.data.length);
-  outBuf.set(scores.data);
+  const buf = scores.data;
   for (let outer = 0; outer < outerSize; outer++) {
     const base = outer * Lq * Lk;
     for (let i = 0; i < Lq; i++) {
+      const rowBase = base + i * Lk;
       for (let j = i + 1; j < Lk; j++) {
-        outBuf[base + i * Lk + j] = -Infinity;
+        buf[rowBase + j] = -Infinity;
       }
     }
   }
-  return createNdArray(outBuf, shape);
 }
 
-function mulScalarNdArray(nd: any, scalar: number): any {
-  const size = nd.data.length;
-  const outBuf = new Float32Array(size);
-  for (let i = 0; i < size; i++) outBuf[i] = nd.data[i] * scalar;
-  return createNdArray(outBuf, Array.from(nd.shape));
-}
-
-function flattenBatchHeadNdArray(nd: any): any {
-  const shape: number[] = Array.from(nd.shape);
+function flattenBatchHeadNdArray(nd: any): NDArray {
+  const shape: number[] = nd.shape;
   if (shape.length < 4) throw new Error('flattenBatchHeadNdArray requires 4D tensor');
-  const B = shape[0] as number;
-  const H = shape[1] as number;
-  const rest = shape.slice(2);
-  return createNdArray(nd.data, [B * H, ...rest]);
+  return createNdArray(nd.data, [shape[0] * shape[1], ...shape.slice(2)]);
 }
 
-function unflattenBatchHeadNdArray(nd: any, B: number, H: number): any {
-  const shape: number[] = Array.from(nd.shape);
+function unflattenBatchHeadNdArray(nd: any, B: number, H: number): NDArray {
+  const shape: number[] = nd.shape;
   if (shape.length < 3 || shape[0] !== B * H) {
     throw new Error('unflattenBatchHeadNdArray: first dim must equal B*H');
   }
-  const newShape = [B, H, ...shape.slice(1)];
-  return createNdArray(nd.data, newShape);
+  return createNdArray(nd.data, [B, H, ...shape.slice(1)]);
 }
 
 export function scaledDotProductAttentionNdArray(
@@ -1621,20 +1795,19 @@ export function scaledDotProductAttentionNdArray(
   isCausal: boolean,
   scale?: number,
   attnMask?: any
-): { out: any; scores: any; attn: any; dropoutMask: Float32Array; scale: number } {
-  const qShape: number[] = Array.from(q.shape);
-  const kShape: number[] = Array.from(k.shape);
-  const vShape: number[] = Array.from(v.shape);
+): { out: NDArray; scores: NDArray; attn: NDArray; dropoutMask: Float32Array | null; scale: number } {
+  const qShape: number[] = q.shape;
+  const kShape: number[] = k.shape;
+  const vShape: number[] = v.shape;
   if (qShape.length !== 4 || kShape.length !== 4 || vShape.length !== 4) {
     throw new Error('Scaled dot product attention expects 4D inputs [B, H, L, D]');
   }
-  const B = qShape[0] as number;
-  const H = qShape[1] as number;
-  const Lq = qShape[2] as number;
-  const Dq = qShape[3] as number;
-  const Lk = kShape[2] as number;
-  const Dk = kShape[3] as number;
-  const Dv = vShape[3] as number;
+  const B = qShape[0];
+  const H = qShape[1];
+  const Lq = qShape[2];
+  const Dq = qShape[3];
+  const Lk = kShape[2];
+  const Dk = kShape[3];
   if (B !== kShape[0] || B !== vShape[0] || H !== kShape[1] || H !== vShape[1]) {
     throw new Error('Scaled dot product attention batch/head mismatch');
   }
@@ -1652,8 +1825,9 @@ export function scaledDotProductAttentionNdArray(
   const v3d = flattenBatchHeadNdArray(v);
 
   const kt3d = transposeLastTwoNdArray(k3d);
-  const scores3d = bmmNdArray(q3d, kt3d);
-  let scores3dScaled = mulScalarNdArray(scores3d, effScale);
+  let scores3d = bmmNdArray(q3d, kt3d);
+  const sData = scores3d.data;
+  for (let i = 0; i < sData.length; i++) sData[i] *= effScale;
 
   if (attnMask) {
     let mask3d = attnMask;
@@ -1661,16 +1835,16 @@ export function scaledDotProductAttentionNdArray(
       mask3d = flattenBatchHeadNdArray(mask3d);
     }
     mask3d = broadcastNdArray(mask3d, [B * H, Lq, Lk]);
-    scores3dScaled = addNdArray(scores3dScaled, mask3d);
+    scores3d = addNdArray(scores3d, mask3d);
   }
 
   if (isCausal) {
-    scores3dScaled = applyCausalMaskNdArray(scores3dScaled);
+    applyCausalMaskInPlace(scores3d);
   }
 
-  const attn3d = softmaxNdArray(scores3dScaled, -1);
+  const attn3d = softmaxNdArray(scores3d, -1);
 
-  let dropoutMask = new Float32Array(attn3d.data.length).fill(1);
+  let dropoutMask: Float32Array | null = null;
   let attn3dDropped = attn3d;
   if (isTraining && dropoutP > 0) {
     const { out, mask } = dropoutNdArray(attn3d, dropoutP, true);
@@ -1680,11 +1854,13 @@ export function scaledDotProductAttentionNdArray(
 
   const output3d = bmmNdArray(attn3dDropped, v3d);
 
-  const out = unflattenBatchHeadNdArray(output3d, B, H);
-  const scores = unflattenBatchHeadNdArray(scores3dScaled, B, H);
-  const attn = unflattenBatchHeadNdArray(attn3dDropped, B, H);
-
-  return { out, scores, attn, dropoutMask, scale: effScale };
+  return {
+    out: unflattenBatchHeadNdArray(output3d, B, H),
+    scores: unflattenBatchHeadNdArray(scores3d, B, H),
+    attn: unflattenBatchHeadNdArray(attn3dDropped, B, H),
+    dropoutMask,
+    scale: effScale
+  };
 }
 
 export function scaledDotProductAttentionGradNdArray(
@@ -1693,17 +1869,13 @@ export function scaledDotProductAttentionGradNdArray(
   k: any,
   v: any,
   attn: any,
-  dropoutMask: Float32Array,
+  dropoutMask: Float32Array | null,
   scale: number,
   isTraining: boolean,
   dropoutP: number
-): { dQ: any; dK: any; dV: any } {
-  const qShape: number[] = Array.from(q.shape);
-  const B = qShape[0] as number;
-  const H = qShape[1] as number;
-  const Lq = qShape[2] as number;
-  const Lk = k.shape[2] as number;
-  const Dv = v.shape[3] as number;
+): { dQ: NDArray; dK: NDArray; dV: NDArray } {
+  const B = q.shape[0];
+  const H = q.shape[1];
 
   const dO3d = flattenBatchHeadNdArray(gradOutput);
   const v3d = flattenBatchHeadNdArray(v);
@@ -1714,30 +1886,19 @@ export function scaledDotProductAttentionGradNdArray(
   const dV3d = bmmNdArray(transposeLastTwoNdArray(attn3d), dO3d);
 
   const dAttn3d = bmmNdArray(dO3d, transposeLastTwoNdArray(v3d));
-  if (isTraining && dropoutP > 0) {
+  if (isTraining && dropoutP > 0 && dropoutMask) {
     const dropoutScale = 1.0 / (1.0 - dropoutP);
-    const size = dAttn3d.data.length;
-    const buf = new Float32Array(size);
-    for (let i = 0; i < size; i++) buf[i] = dAttn3d.data[i] * dropoutMask[i] * dropoutScale;
-    dAttn3d.data = buf;
-  }
-
-  const dScores3d = softmaxGradNdArray(dAttn3d, attn3d, -1);
-  // Apply causal mask gradient: zero out positions that were masked in forward
-  // Forward causal mask zeros the upper triangular part of scores
-  const LqLocal = Lq;
-  const LkLocal = Lk;
-  const outerSize = dScores3d.data.length / (LqLocal * LkLocal);
-  for (let outer = 0; outer < outerSize; outer++) {
-    const base = outer * LqLocal * LkLocal;
-    for (let i = 0; i < LqLocal; i++) {
-      for (let j = i + 1; j < LkLocal; j++) {
-        dScores3d.data[base + i * LkLocal + j] = 0;
-      }
+    const dAttnData = dAttn3d.data;
+    for (let i = 0; i < dAttnData.length; i++) {
+      dAttnData[i] *= dropoutMask[i] * dropoutScale;
     }
   }
 
-  dScores3d.data = mulScalarNdArray(dScores3d, scale).data;
+  const dScores3d = softmaxGradNdArray(dAttn3d, attn3d, -1);
+  const dScoresData = dScores3d.data;
+  for (let i = 0; i < dScoresData.length; i++) {
+    dScoresData[i] *= scale;
+  }
 
   const dQ3d = bmmNdArray(dScores3d, k3d);
   const dK3d = bmmNdArray(transposeLastTwoNdArray(dScores3d), q3d);

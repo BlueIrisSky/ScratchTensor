@@ -1,6 +1,7 @@
-import { TensorNode, nextId, registerTensor } from '../tensor.js';
+import { TensorNode } from '../tensor.js';
 import { OpNode } from '../types.js';
 import { isGraphTracking } from '../autograd.js';
+import { initOpOutput } from './helpers.js';
 import {
   layerNormNdArray,
   layerNormGradNdArray,
@@ -22,13 +23,7 @@ export class LayerNormOp implements OpNode {
     const { out, mean, invStd } = layerNormNdArray(X.data, n);
     this.mean = mean;
     this.invStd = invStd;
-    const requiresGrad = X.requiresGrad && isGraphTracking();
-    this.output = new TensorNode(nextId(), outName, out, requiresGrad);
-    this.output.isLeaf = false;
-    if (requiresGrad) {
-      this.output.creatorOp = this;
-    }
-    registerTensor(this.output);
+    this.output = initOpOutput(this, outName, out);
   }
 
   backwardFn(gradOutput: any): void {
@@ -43,33 +38,30 @@ export class DropoutOp implements OpNode {
   opName = 'Dropout';
   inputs: TensorNode[];
   output: TensorNode;
-  private p: number;
   private mask: Float32Array;
   private scale: number;
 
   constructor(X: TensorNode, p: number, outName: string) {
     this.inputs = [X];
-    this.p = p;
     const isTraining = isGraphTracking();
     const { out, mask } = dropoutNdArray(X.data, p, isTraining);
     this.mask = mask;
     this.scale = isTraining ? (p >= 1 ? 1.0 : 1.0 / (1.0 - p)) : 1.0;
-    const requiresGrad = X.requiresGrad && isGraphTracking();
-    this.output = new TensorNode(nextId(), outName, out, requiresGrad);
-    this.output.isLeaf = false;
-    if (requiresGrad) this.output.creatorOp = this;
-    registerTensor(this.output);
+    this.output = initOpOutput(this, outName, out);
   }
 
   backwardFn(gradOutput: any): void {
     const [X] = this.inputs;
     if (X.requiresGrad) {
-      const size = gradOutput.data.length;
+      const gData = gradOutput.data;
+      const mask = this.mask;
+      const scale = this.scale;
+      const size = gData.length;
       const buf = new Float32Array(size);
       for (let i = 0; i < size; i++) {
-        buf[i] = gradOutput.data[i] * this.mask[i] * this.scale;
+        buf[i] = gData[i] * mask[i] * scale;
       }
-      X.addGrad(createNdArray(buf, Array.from(gradOutput.shape)));
+      X.addGrad(createNdArray(buf, gradOutput.shape.slice()));
     }
   }
 }

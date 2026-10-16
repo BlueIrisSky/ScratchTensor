@@ -1,6 +1,7 @@
-import { TensorNode, nextId, registerTensor } from '../tensor.js';
+import { TensorNode } from '../tensor.js';
 import { OpNode } from '../types.js';
 import { isGraphTracking } from '../autograd.js';
+import { initOpOutput } from './helpers.js';
 import {
   scaledDotProductAttentionNdArray,
   scaledDotProductAttentionGradNdArray
@@ -11,11 +12,10 @@ export class ScaledDotProductAttentionOp implements OpNode {
   inputs: TensorNode[];
   output: TensorNode;
   private attn: any;
-  private dropoutMask: Float32Array;
+  private dropoutMask: Float32Array | null;
   private scale: number;
   private isTraining: boolean;
   private dropoutP: number;
-  private isCausal: boolean;
 
   constructor(
     Q: TensorNode,
@@ -28,7 +28,6 @@ export class ScaledDotProductAttentionOp implements OpNode {
     attnMask?: TensorNode
   ) {
     this.inputs = [Q, K, V];
-    this.isCausal = isCausal;
     this.dropoutP = dropoutP;
     this.isTraining = isGraphTracking();
     const maskData = attnMask ? attnMask.data : undefined;
@@ -38,11 +37,7 @@ export class ScaledDotProductAttentionOp implements OpNode {
     this.attn = attn;
     this.dropoutMask = dropoutMask;
     this.scale = effScale;
-    const requiresGrad = (Q.requiresGrad || K.requiresGrad || V.requiresGrad) && this.isTraining;
-    this.output = new TensorNode(nextId(), outName, out, requiresGrad);
-    this.output.isLeaf = false;
-    if (requiresGrad) this.output.creatorOp = this;
-    registerTensor(this.output);
+    this.output = initOpOutput(this, outName, out);
   }
 
   backwardFn(gradOutput: any): void {

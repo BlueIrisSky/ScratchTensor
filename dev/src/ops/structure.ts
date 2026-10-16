@@ -1,7 +1,6 @@
-import { TensorNode, nextId, registerTensor } from '../tensor.js';
+import { TensorNode } from '../tensor.js';
 import { OpNode } from '../types.js';
-import { isGraphTracking } from '../autograd.js';
-import { markRequiresGrad } from './helpers.js';
+import { initOpOutput } from './helpers.js';
 import {
   createNdArray,
   zerosNdArray,
@@ -15,7 +14,8 @@ import {
   stackNdArray,
   sliceNdArray,
   transposeNdArray,
-  computeRowMajorStrides
+  normalizeDim,
+  getAxisStrides
 } from '../ndarray-utils.js';
 
 export class ReshapeOp implements OpNode {
@@ -27,20 +27,13 @@ export class ReshapeOp implements OpNode {
     this.inputs = [X];
     const resolvedShape = resolveReshapeShape(X.shape, newShape);
     const outData = createNdArray(X.data.data, resolvedShape);
-    const requiresGrad = X.requiresGrad && isGraphTracking();
-    this.output = new TensorNode(nextId(), outName, outData, requiresGrad);
-    this.output.isLeaf = false;
-    if (requiresGrad) {
-      this.output.creatorOp = this;
-    }
-    registerTensor(this.output);
+    this.output = initOpOutput(this, outName, outData);
   }
 
   backwardFn(gradOutput: any): void {
     const [X] = this.inputs;
     if (X.requiresGrad) {
-      const dX = createNdArray(gradOutput.data, X.shape);
-      X.addGrad(dX);
+      X.addGrad(createNdArray(gradOutput.data, X.shape));
     }
   }
 }
@@ -56,12 +49,7 @@ export class TransposeOp implements OpNode {
     this.inputs = [X];
     this.dim1 = dim1;
     this.dim2 = dim2;
-    const outData = transposeNdArray(X.data, dim1, dim2);
-    const requiresGrad = X.requiresGrad && isGraphTracking();
-    this.output = new TensorNode(nextId(), outName, outData, requiresGrad);
-    this.output.isLeaf = false;
-    if (requiresGrad) this.output.creatorOp = this;
-    registerTensor(this.output);
+    this.output = initOpOutput(this, outName, transposeNdArray(X.data, dim1, dim2));
   }
 
   backwardFn(gradOutput: any): void {
@@ -79,9 +67,7 @@ export class UnsqueezeOp implements OpNode {
   constructor(X: TensorNode, dim: number, outName: string) {
     this.dim = dim;
     this.inputs = [X];
-    const outData = unsqueezeNdArray(X.data, dim);
-    this.output = new TensorNode(nextId(), outName, outData, false);
-    markRequiresGrad(this, this.inputs);
+    this.output = initOpOutput(this, outName, unsqueezeNdArray(X.data, dim));
   }
 
   backwardFn(gradOutput: any): void {
@@ -96,32 +82,18 @@ export class SqueezeOp implements OpNode {
   opName = 'Squeeze';
   inputs: TensorNode[];
   output: TensorNode;
-  private dim?: number;
   private originalShape: number[];
 
   constructor(X: TensorNode, outName: string, dim?: number) {
-    this.dim = dim;
     this.inputs = [X];
-    this.originalShape = Array.from(X.shape);
-    const outData = squeezeNdArray(X.data, dim);
-    this.output = new TensorNode(nextId(), outName, outData, false);
-    markRequiresGrad(this, this.inputs);
+    this.originalShape = X.shape.slice();
+    this.output = initOpOutput(this, outName, squeezeNdArray(X.data, dim));
   }
 
   backwardFn(gradOutput: any): void {
     const [X] = this.inputs;
     if (X.requiresGrad) {
-      if (this.dim !== undefined) {
-        X.addGrad(unsqueezeNdArray(gradOutput, this.dim));
-      } else {
-        let expanded = gradOutput;
-        for (let i = 0; i < this.originalShape.length; i++) {
-          if (this.originalShape[i] === 1) {
-            expanded = unsqueezeNdArray(expanded, i);
-          }
-        }
-        X.addGrad(expanded);
-      }
+      X.addGrad(createNdArray(gradOutput.data, this.originalShape.slice()));
     }
   }
 }
@@ -134,10 +106,8 @@ export class ExpandOp implements OpNode {
 
   constructor(X: TensorNode, targetShape: number[], outName: string) {
     this.inputs = [X];
-    this.originalShape = Array.from(X.shape);
-    const outData = expandNdArray(X.data, targetShape);
-    this.output = new TensorNode(nextId(), outName, outData, false);
-    markRequiresGrad(this, this.inputs);
+    this.originalShape = X.shape.slice();
+    this.output = initOpOutput(this, outName, expandNdArray(X.data, targetShape));
   }
 
   backwardFn(gradOutput: any): void {
@@ -157,20 +127,18 @@ export class ConcatOp implements OpNode {
   constructor(inputs: TensorNode[], dim: number, outName: string) {
     this.inputs = inputs;
     this.dim = dim;
-    const outData = concatNdArray(inputs.map(n => n.data), dim);
-    this.output = new TensorNode(nextId(), outName, outData, false);
-    markRequiresGrad(this, this.inputs);
+    this.output = initOpOutput(this, outName, concatNdArray(inputs.map(n => n.data), dim));
   }
 
   backwardFn(gradOutput: any): void {
+    const d = normalizeDim(this.dim, gradOutput.shape.length);
     let offset = 0;
     for (const input of this.inputs) {
+      const len = input.shape[d];
       if (input.requiresGrad) {
-        const start = offset;
-        const end = offset + input.shape[this.dim];
-        input.addGrad(sliceNdArray(gradOutput, this.dim, start, end));
+        input.addGrad(sliceNdArray(gradOutput, d, offset, offset + len));
       }
-      offset += input.shape[this.dim];
+      offset += len;
     }
   }
 }
@@ -184,9 +152,7 @@ export class StackOp implements OpNode {
   constructor(inputs: TensorNode[], dim: number, outName: string) {
     this.inputs = inputs;
     this.dim = dim;
-    const outData = stackNdArray(inputs.map(n => n.data), dim);
-    this.output = new TensorNode(nextId(), outName, outData, false);
-    markRequiresGrad(this, this.inputs);
+    this.output = initOpOutput(this, outName, stackNdArray(inputs.map(n => n.data), dim));
   }
 
   backwardFn(gradOutput: any): void {
@@ -200,17 +166,6 @@ export class StackOp implements OpNode {
   }
 }
 
-function computeStrides(shape: number[]): number[] {
-  if (shape.length === 0) return [1];
-  const strides = new Array(shape.length);
-  let stride = 1;
-  for (let i = shape.length - 1; i >= 0; i--) {
-    strides[i] = stride;
-    stride *= shape[i];
-  }
-  return strides;
-}
-
 export class SliceOp implements OpNode {
   opName = 'Slice';
   inputs: TensorNode[];
@@ -222,70 +177,48 @@ export class SliceOp implements OpNode {
 
   constructor(X: TensorNode, dim: number, start: number, end: number, outName: string) {
     this.inputs = [X];
-    this.dim = dim;
+    this.dim = normalizeDim(dim, X.shape.length);
     this.start = start;
     this.end = end;
-    this.originalShape = Array.from(X.shape);
-    const outData = sliceNdArray(X.data, dim, start, end);
-    this.output = new TensorNode(nextId(), outName, outData, false);
-    markRequiresGrad(this, this.inputs);
+    this.originalShape = X.shape.slice();
+    this.output = initOpOutput(this, outName, sliceNdArray(X.data, this.dim, start, end));
   }
 
   backwardFn(gradOutput: any): void {
     const [X] = this.inputs;
     if (X.requiresGrad) {
-      const dim = this.dim;
+      const d = this.dim;
       const start = this.start;
+      const sliceLen = this.end - start;
       const dX = zerosNdArray(this.originalShape);
-      const sliceShape = Array.from(this.originalShape);
-      sliceShape[dim] = this.end - this.start;
-      const outStrides = computeStrides(sliceShape);
+      const { outerSize, dimSize, innerSize } = getAxisStrides(this.originalShape, d);
+      const dxOuterStride = dimSize * innerSize;
+      const gradOuterStride = sliceLen * innerSize;
+      const startOffset = start * innerSize;
+      const dxData = dX.data;
+      const gData: Float32Array = gradOutput.data;
 
-      function iterate(pos: number[], cd: number) {
-        if (cd === sliceShape.length) {
-          const srcPos = [...pos];
-          srcPos[dim] = start + pos[dim];
-          let srcIdx = 0;
-          for (let i = 0; i < srcPos.length; i++) {
-            srcIdx += srcPos[i] * X.data.strides[i];
-          }
-          let gradIdx = 0;
-          for (let i = 0; i < pos.length; i++) {
-            gradIdx += pos[i] * outStrides[i];
-          }
-          dX.data[srcIdx] += gradOutput.data[gradIdx];
-          return;
-        }
-        for (let i = 0; i < sliceShape[cd]; i++) {
-          pos.push(i);
-          iterate(pos, cd + 1);
-          pos.pop();
-        }
+      for (let outer = 0; outer < outerSize; outer++) {
+        const gradStart = outer * gradOuterStride;
+        const dstStart = outer * dxOuterStride + startOffset;
+        dxData.set(gData.subarray(gradStart, gradStart + gradOuterStride), dstStart);
       }
-      iterate([], 0);
       X.addGrad(dX);
     }
   }
 }
 
 export function split(X: TensorNode, dim: number, n: number, prefix: string): TensorNode[] {
-  const ndim = X.shape.length;
-  const d = dim < 0 ? dim + ndim : dim;
-  if (d < 0 || d >= ndim) {
-    throw new Error(`Dimension ${dim} out of range for ${ndim}-D tensor`);
-  }
+  const d = normalizeDim(dim, X.shape.length);
   const dimSize = X.shape[d];
   if (dimSize % n !== 0) {
     throw new Error(`Cannot split dim ${d} of size ${dimSize} into ${n} equal parts`);
   }
   const chunk = dimSize / n;
-  const results: TensorNode[] = [];
+  const results = new Array<TensorNode>(n);
   for (let i = 0; i < n; i++) {
     const start = i * chunk;
-    const end = start + chunk;
-    const outName = `${prefix}_${i}`;
-    const op = new SliceOp(X, d, start, end, outName);
-    results.push(op.output);
+    results[i] = new SliceOp(X, d, start, start + chunk, `${prefix}_${i}`).output;
   }
   return results;
 }

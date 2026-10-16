@@ -94,7 +94,7 @@ describe('Verification: Scaled Dot Product Attention', () => {
   it('backward gradients align with TensorFlow reference', () => {
     const qData = [[[[1.0, 0.5], [0.2, 1.5]], [[0.3, 1.0], [1.2, 0.4]]]];
     const kData = [[[[0.8, 0.1], [0.5, 0.9]], [[0.2, 0.7], [0.6, 0.3]]]];
-    const vData = [[[[1.0, 0.0], [0.0, 1.0]], [[0.5, 0.5], [1.0, 0.0]]]];
+    const vData = [[[[1.0, 2.0], [0.0, 0.5]], [[0.5, 1.5], [1.0, 0.0]]]];
 
     const Q = createTensor('Q', qData, true);
     const K = createTensor('K', kData, true);

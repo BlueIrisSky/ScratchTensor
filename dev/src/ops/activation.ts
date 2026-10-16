@@ -1,6 +1,6 @@
-import { TensorNode, nextId, registerTensor } from '../tensor.js';
+import { TensorNode } from '../tensor.js';
 import { OpNode } from '../types.js';
-import { isGraphTracking } from '../autograd.js';
+import { initOpOutput } from './helpers.js';
 import {
   reluNdArray,
   reluGradNdArray,
@@ -21,21 +21,13 @@ export class ReLUOp implements OpNode {
 
   constructor(X: TensorNode, outName: string) {
     this.inputs = [X];
-    const outData = reluNdArray(X.data);
-    const requiresGrad = X.requiresGrad && isGraphTracking();
-    this.output = new TensorNode(nextId(), outName, outData, requiresGrad);
-    this.output.isLeaf = false;
-    if (requiresGrad) {
-      this.output.creatorOp = this;
-    }
-    registerTensor(this.output);
+    this.output = initOpOutput(this, outName, reluNdArray(X.data));
   }
 
   backwardFn(gradOutput: any): void {
     const [X] = this.inputs;
     if (X.requiresGrad) {
-      const dX = reluGradNdArray(gradOutput, X.data);
-      X.addGrad(dX);
+      X.addGrad(reluGradNdArray(gradOutput, X.data));
     }
   }
 }
@@ -47,12 +39,7 @@ export class GeluOp implements OpNode {
 
   constructor(X: TensorNode, outName: string) {
     this.inputs = [X];
-    const outData = geluNdArray(X.data);
-    const requiresGrad = X.requiresGrad && isGraphTracking();
-    this.output = new TensorNode(nextId(), outName, outData, requiresGrad);
-    this.output.isLeaf = false;
-    if (requiresGrad) this.output.creatorOp = this;
-    registerTensor(this.output);
+    this.output = initOpOutput(this, outName, geluNdArray(X.data));
   }
 
   backwardFn(gradOutput: any): void {
@@ -68,17 +55,12 @@ export class SigmoidOp implements OpNode {
 
   constructor(X: TensorNode, outName: string) {
     this.inputs = [X];
-    const outData = sigmoidNdArray(X.data);
-    const requiresGrad = X.requiresGrad && isGraphTracking();
-    this.output = new TensorNode(nextId(), outName, outData, requiresGrad);
-    this.output.isLeaf = false;
-    if (requiresGrad) this.output.creatorOp = this;
-    registerTensor(this.output);
+    this.output = initOpOutput(this, outName, sigmoidNdArray(X.data));
   }
 
   backwardFn(gradOutput: any): void {
     const [X] = this.inputs;
-    if (X.requiresGrad) X.addGrad(sigmoidGradNdArray(gradOutput, X.data));
+    if (X.requiresGrad) X.addGrad(sigmoidGradNdArray(gradOutput, this.output.data));
   }
 }
 
@@ -89,17 +71,12 @@ export class TanhOp implements OpNode {
 
   constructor(X: TensorNode, outName: string) {
     this.inputs = [X];
-    const outData = tanhNdArray(X.data);
-    const requiresGrad = X.requiresGrad && isGraphTracking();
-    this.output = new TensorNode(nextId(), outName, outData, requiresGrad);
-    this.output.isLeaf = false;
-    if (requiresGrad) this.output.creatorOp = this;
-    registerTensor(this.output);
+    this.output = initOpOutput(this, outName, tanhNdArray(X.data));
   }
 
   backwardFn(gradOutput: any): void {
     const [X] = this.inputs;
-    if (X.requiresGrad) X.addGrad(tanhGradNdArray(gradOutput, X.data));
+    if (X.requiresGrad) X.addGrad(tanhGradNdArray(gradOutput, this.output.data));
   }
 }
 
@@ -112,12 +89,7 @@ export class SoftmaxOp implements OpNode {
   constructor(X: TensorNode, dim: number, outName: string) {
     this.inputs = [X];
     this.dim = dim;
-    const outData = softmaxNdArray(X.data, dim);
-    const requiresGrad = X.requiresGrad && isGraphTracking();
-    this.output = new TensorNode(nextId(), outName, outData, requiresGrad);
-    this.output.isLeaf = false;
-    if (requiresGrad) this.output.creatorOp = this;
-    registerTensor(this.output);
+    this.output = initOpOutput(this, outName, softmaxNdArray(X.data, dim));
   }
 
   backwardFn(gradOutput: any): void {

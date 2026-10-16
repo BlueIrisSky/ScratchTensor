@@ -1,6 +1,6 @@
-import { TensorNode, nextId, registerTensor } from '../tensor.js';
+import { TensorNode } from '../tensor.js';
 import { OpNode } from '../types.js';
-import { isGraphTracking } from '../autograd.js';
+import { initOpOutput } from './helpers.js';
 import {
   powNdArray,
   expNdArray,
@@ -20,23 +20,28 @@ export class PowOp implements OpNode {
   constructor(X: TensorNode, p: number, outName: string) {
     this.inputs = [X];
     this.p = p;
-    const outData = powNdArray(X.data, p);
-    const requiresGrad = X.requiresGrad && isGraphTracking();
-    this.output = new TensorNode(nextId(), outName, outData, requiresGrad);
-    this.output.isLeaf = false;
-    if (requiresGrad) this.output.creatorOp = this;
-    registerTensor(this.output);
+    this.output = initOpOutput(this, outName, powNdArray(X.data, p));
   }
 
   backwardFn(gradOutput: any): void {
     const [X] = this.inputs;
     if (X.requiresGrad) {
-      const size = gradOutput.data.length;
+      const gData = gradOutput.data;
+      const xData = X.data.data;
+      const size = gData.length;
       const buf = new Float32Array(size);
-      for (let i = 0; i < size; i++) {
-        buf[i] = gradOutput.data[i] * this.p * Math.pow(X.data.data[i], this.p - 1);
+      const p = this.p;
+      if (p === 2) {
+        for (let i = 0; i < size; i++) {
+          buf[i] = 2.0 * gData[i] * xData[i];
+        }
+      } else {
+        const pm1 = p - 1;
+        for (let i = 0; i < size; i++) {
+          buf[i] = gData[i] * p * Math.pow(xData[i], pm1);
+        }
       }
-      X.addGrad(createNdArray(buf, Array.from(gradOutput.shape)));
+      X.addGrad(createNdArray(buf, gradOutput.shape.slice()));
     }
   }
 }
@@ -48,12 +53,7 @@ export class ExpOp implements OpNode {
 
   constructor(X: TensorNode, outName: string) {
     this.inputs = [X];
-    const outData = expNdArray(X.data);
-    const requiresGrad = X.requiresGrad && isGraphTracking();
-    this.output = new TensorNode(nextId(), outName, outData, requiresGrad);
-    this.output.isLeaf = false;
-    if (requiresGrad) this.output.creatorOp = this;
-    registerTensor(this.output);
+    this.output = initOpOutput(this, outName, expNdArray(X.data));
   }
 
   backwardFn(gradOutput: any): void {
@@ -69,23 +69,20 @@ export class LogOp implements OpNode {
 
   constructor(X: TensorNode, outName: string) {
     this.inputs = [X];
-    const outData = logNdArray(X.data);
-    const requiresGrad = X.requiresGrad && isGraphTracking();
-    this.output = new TensorNode(nextId(), outName, outData, requiresGrad);
-    this.output.isLeaf = false;
-    if (requiresGrad) this.output.creatorOp = this;
-    registerTensor(this.output);
+    this.output = initOpOutput(this, outName, logNdArray(X.data));
   }
 
   backwardFn(gradOutput: any): void {
     const [X] = this.inputs;
     if (X.requiresGrad) {
-      const size = gradOutput.data.length;
+      const gData = gradOutput.data;
+      const xData = X.data.data;
+      const size = gData.length;
       const buf = new Float32Array(size);
       for (let i = 0; i < size; i++) {
-        buf[i] = gradOutput.data[i] / X.data.data[i];
+        buf[i] = gData[i] / xData[i];
       }
-      X.addGrad(createNdArray(buf, Array.from(gradOutput.shape)));
+      X.addGrad(createNdArray(buf, gradOutput.shape.slice()));
     }
   }
 }
@@ -97,23 +94,20 @@ export class SqrtOp implements OpNode {
 
   constructor(X: TensorNode, outName: string) {
     this.inputs = [X];
-    const outData = sqrtNdArray(X.data);
-    const requiresGrad = X.requiresGrad && isGraphTracking();
-    this.output = new TensorNode(nextId(), outName, outData, requiresGrad);
-    this.output.isLeaf = false;
-    if (requiresGrad) this.output.creatorOp = this;
-    registerTensor(this.output);
+    this.output = initOpOutput(this, outName, sqrtNdArray(X.data));
   }
 
   backwardFn(gradOutput: any): void {
     const [X] = this.inputs;
     if (X.requiresGrad) {
-      const size = gradOutput.data.length;
+      const gData = gradOutput.data;
+      const outData = this.output.data.data;
+      const size = gData.length;
       const buf = new Float32Array(size);
       for (let i = 0; i < size; i++) {
-        buf[i] = gradOutput.data[i] / (2.0 * Math.sqrt(X.data.data[i]));
+        buf[i] = gData[i] / (2.0 * outData[i]);
       }
-      X.addGrad(createNdArray(buf, Array.from(gradOutput.shape)));
+      X.addGrad(createNdArray(buf, gradOutput.shape.slice()));
     }
   }
 }
@@ -125,24 +119,21 @@ export class AbsOp implements OpNode {
 
   constructor(X: TensorNode, outName: string) {
     this.inputs = [X];
-    const outData = absNdArray(X.data);
-    const requiresGrad = X.requiresGrad && isGraphTracking();
-    this.output = new TensorNode(nextId(), outName, outData, requiresGrad);
-    this.output.isLeaf = false;
-    if (requiresGrad) this.output.creatorOp = this;
-    registerTensor(this.output);
+    this.output = initOpOutput(this, outName, absNdArray(X.data));
   }
 
   backwardFn(gradOutput: any): void {
     const [X] = this.inputs;
     if (X.requiresGrad) {
-      const size = gradOutput.data.length;
+      const gData = gradOutput.data;
+      const xData = X.data.data;
+      const size = gData.length;
       const buf = new Float32Array(size);
       for (let i = 0; i < size; i++) {
-        const v = X.data.data[i];
-        buf[i] = gradOutput.data[i] * (v > 0 ? 1 : v < 0 ? -1 : 0);
+        const v = xData[i];
+        buf[i] = v > 0 ? gData[i] : v < 0 ? -gData[i] : 0;
       }
-      X.addGrad(createNdArray(buf, Array.from(gradOutput.shape)));
+      X.addGrad(createNdArray(buf, gradOutput.shape.slice()));
     }
   }
 }

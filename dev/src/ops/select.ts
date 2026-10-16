@@ -1,7 +1,6 @@
-import { TensorNode, nextId, registerTensor } from '../tensor.js';
+import { TensorNode } from '../tensor.js';
 import { OpNode } from '../types.js';
-import { isGraphTracking } from '../autograd.js';
-import { markRequiresGrad } from './helpers.js';
+import { initOpOutput } from './helpers.js';
 import {
   whereNdArray,
   computeBroadcastShape,
@@ -20,28 +19,28 @@ export class WhereOp implements OpNode {
   constructor(cond: TensorNode, a: TensorNode, b: TensorNode, outName: string) {
     this.inputs = [cond, a, b];
     this.broadcastShape = computeBroadcastShape([cond.shape, a.shape, b.shape]);
-    const outData = whereNdArray(cond.data, a.data, b.data);
-    this.output = new TensorNode(nextId(), outName, outData, false);
-    markRequiresGrad(this, [a, b]);
+    this.output = initOpOutput(this, outName, whereNdArray(cond.data, a.data, b.data), [a, b]);
   }
 
   backwardFn(gradOutput: any): void {
     const [cond, a, b] = this.inputs;
     const condBroadcast = broadcastNdArray(cond.data, this.broadcastShape);
-    const size = gradOutput.data.length;
+    const cData = condBroadcast.data;
+    const gData = gradOutput.data;
+    const size = gData.length;
     if (a.requiresGrad) {
-      const dA = createNdArray(new Float32Array(size), Array.from(gradOutput.shape));
+      const dABuf = new Float32Array(size);
       for (let i = 0; i < size; i++) {
-        dA.data[i] = condBroadcast.data[i] ? gradOutput.data[i] : 0;
+        dABuf[i] = cData[i] ? gData[i] : 0;
       }
-      a.addGrad(sumToShapeNdArray(dA, a.shape));
+      a.addGrad(sumToShapeNdArray(createNdArray(dABuf, gradOutput.shape.slice()), a.shape));
     }
     if (b.requiresGrad) {
-      const dB = createNdArray(new Float32Array(size), Array.from(gradOutput.shape));
+      const dBBuf = new Float32Array(size);
       for (let i = 0; i < size; i++) {
-        dB.data[i] = condBroadcast.data[i] ? 0 : gradOutput.data[i];
+        dBBuf[i] = cData[i] ? 0 : gData[i];
       }
-      b.addGrad(sumToShapeNdArray(dB, b.shape));
+      b.addGrad(sumToShapeNdArray(createNdArray(dBBuf, gradOutput.shape.slice()), b.shape));
     }
   }
 }
@@ -57,21 +56,23 @@ export class ClampOp implements OpNode {
     this.inputs = [X];
     this.min = min;
     this.max = max;
-    const outData = clampNdArray(X.data, min, max);
-    this.output = new TensorNode(nextId(), outName, outData, false);
-    markRequiresGrad(this, this.inputs);
+    this.output = initOpOutput(this, outName, clampNdArray(X.data, min, max));
   }
 
   backwardFn(gradOutput: any): void {
     const [X] = this.inputs;
     if (X.requiresGrad) {
-      const size = gradOutput.data.length;
+      const gData = gradOutput.data;
+      const xData = X.data.data;
+      const size = gData.length;
       const dXBuf = new Float32Array(size);
+      const min = this.min;
+      const max = this.max;
       for (let i = 0; i < size; i++) {
-        const v = X.data.data[i];
-        dXBuf[i] = (v >= this.min && v <= this.max) ? gradOutput.data[i] : 0;
+        const v = xData[i];
+        dXBuf[i] = v >= min && v <= max ? gData[i] : 0;
       }
-      X.addGrad(createNdArray(dXBuf, Array.from(gradOutput.shape)));
+      X.addGrad(createNdArray(dXBuf, gradOutput.shape.slice()));
     }
   }
 }
