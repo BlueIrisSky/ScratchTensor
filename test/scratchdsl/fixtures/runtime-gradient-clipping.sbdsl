@@ -1,0 +1,15 @@
+@var first = ""
+@var second = ""
+@sprite "Gradient ownership" {
+  @init {}
+  当绿旗被点击 {
+    scratch-tensor-extension.[删除所有 Tensor]
+    scratch-tensor-extension.[创建 Tensor 命名为 "A" 并赋值 "[2]" 需梯度: <true>]
+    scratch-tensor-extension.[创建 Tensor 命名为 "B" 并赋值 "[3]" 需梯度: <true>]
+    scratch-tensor-extension.[张量 "A" 与 "B" 进行 /'+'/ 运算 赋值给 "sum"]
+    scratch-tensor-extension.[对 Tensor "sum" 进行反向传播]
+    scratch-tensor-extension.[对所有参数执行梯度裁剪 最大阈值: 1]
+    [将 $first 设为 scratch-tensor-extension.(获取 Tensor "A" 的 /'梯度'/)]
+    [将 $second 设为 scratch-tensor-extension.(获取 Tensor "B" 的 /'梯度'/)]
+  }
+}

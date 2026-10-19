@@ -1,0 +1,6 @@
+@sprite "ScratchDSL 验证" {
+  @init {}
+  当绿旗被点击 {
+    scratch-tensor-extension.[创建 Tensor 命名为 "A" 并赋值 "[1,2]" 需梯度: <false>]
+  }
+}

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+
+# Compiler checkout used by CI
+/.scratchdsl-compiler/
+
+# Temporary files and generated test output
+/target/
+coverage/
+*.log
+*.tmp
+*.sb3
+__pycache__/

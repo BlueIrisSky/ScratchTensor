@@ -1,0 +1,20 @@
+@var product = ""
+@var quotient = ""
+@var sum = ""
+@var quoted_sum = ""
+@sprite "ScratchDSL 验证" {
+  @init {}
+  当绿旗被点击 {
+    scratch-tensor-extension::"deleteAllTensorsBlock".[]
+    scratch-tensor-extension::"createTensorBlock".["A", "[[2,4],[6,8]]", <false>]
+    scratch-tensor-extension::"createTensorBlock".["B", "[[1,2],[3,4]]", <false>]
+    scratch-tensor-extension::"binaryOpBlock".["A", "B", /'*'/, "product"]
+    scratch-tensor-extension.[张量 "A" 与 "B" 进行 /'/'/ 运算 赋值给 "quotient"]
+    scratch-tensor-extension::"reductionBlock".["A", -1, /'求和(Sum)'/, <false>, "row_sum"]
+    scratch-tensor-extension.[对 Tensor "A" 沿维度 -1 进行 /'\u6c42和(Sum)'/ 保留维度: <false> 赋值给 "quoted_sum"]
+    [将 $product 设为 scratch-tensor-extension::"getTensorPropertyBlock".("product", /'数值'/)]
+    [将 $quotient 设为 scratch-tensor-extension.(获取 Tensor "quotient" 的 /'数值'/)]
+    [将 $sum 设为 scratch-tensor-extension.(获取 Tensor "row_sum" 的 /'数值'/)]
+    [将 $quoted_sum 设为 scratch-tensor-extension.(获取 Tensor "quoted_sum" 的 /'数值'/)]
+  }
+}

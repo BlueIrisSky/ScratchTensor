@@ -1,0 +1,25 @@
+@var before = ""
+@var after = ""
+@var gradient_before = ""
+@var gradient_after = ""
+@var after_import = 0
+@sprite "Coordinator" {
+  @init {}
+  当绿旗被点击 {
+    scratch-tensor-extension.[删除所有 Tensor]
+    scratch-tensor-extension.[创建 Tensor 命名为 "W" 并赋值 "[1,2]" 需梯度: <true>]
+    scratch-tensor-extension.[对 Tensor "W" 进行反向传播]
+    [将 $before 设为 scratch-tensor-extension.(获取当前模型权重字典 JSON 字符串)]
+    [将 $gradient_before 设为 scratch-tensor-extension.(获取 Tensor "W" 的 /'梯度'/)]
+    [广播 "invalid-checkpoint" 并等待]
+    [将 $after 设为 scratch-tensor-extension.(获取当前模型权重字典 JSON 字符串)]
+    [将 $gradient_after 设为 scratch-tensor-extension.(获取 Tensor "W" 的 /'梯度'/)]
+  }
+}
+@sprite "Invalid import" {
+  @init {}
+  当收到广播 "invalid-checkpoint" {
+    scratch-tensor-extension.[从 StateDict 文本 "{\"framework\":\"ScratchTensor\",\"tensors\":[{\"name\":\"W\",\"shape\":[2],\"requires_grad\":true,\"data\":[9,8]},{\"name\":\"new\",\"shape\":[1],\"requires_grad\":true,\"data\":[7]},{\"name\":\"bad\",\"shape\":[1],\"requires_grad\":true,\"data\":[null]}]}" 导入并恢复模型权重]
+    [将 $after_import 设为 1]
+  }
+}

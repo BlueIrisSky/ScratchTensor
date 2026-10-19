@@ -1,0 +1,8 @@
+@sprite "ScratchDSL 验证" {
+  @init {}
+  当绿旗被点击 {
+    [移到 /'鼠标指针'/]
+    [移到 /'_mouse_'/]
+    scratch-tensor-extension.[删除所有 Tensor]
+  }
+}

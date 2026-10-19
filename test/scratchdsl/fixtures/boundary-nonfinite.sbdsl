@@ -1,0 +1,19 @@
+@var infinity_number = 0
+@var nan_number = 0
+@var infinity_json = ""
+@var nan_json = ""
+@var missing = ""
+@sprite "ScratchDSL 验证" {
+  @init {}
+  当绿旗被点击 {
+    scratch-tensor-extension.[创建 Tensor 命名为 "one" 并赋值 "1" 需梯度: <false>]
+    scratch-tensor-extension.[创建 Tensor 命名为 "zero" 并赋值 "0" 需梯度: <false>]
+    scratch-tensor-extension.[张量 "one" 与 "zero" 进行 /'/'/ 运算 赋值给 "infinity"]
+    scratch-tensor-extension.[张量 "zero" 与 "zero" 进行 /'/'/ 运算 赋值给 "nan"]
+    [将 $infinity_number 设为 scratch-tensor-extension.(获取 Tensor "infinity" 的 /'标量值'/)]
+    [将 $nan_number 设为 scratch-tensor-extension.(获取 Tensor "nan" 的 /'标量值'/)]
+    [将 $infinity_json 设为 scratch-tensor-extension.(获取 Tensor "infinity" 的 /'数值'/)]
+    [将 $nan_json 设为 scratch-tensor-extension.(获取 Tensor "nan" 的 /'数值'/)]
+    [将 $missing 设为 scratch-tensor-extension.(获取 Tensor "absent" 的 /'标量值'/)]
+  }
+}

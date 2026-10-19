@@ -1,0 +1,51 @@
+@var all = ""
+@var rows = ""
+@var selected = ""
+@var after_nan = 0
+@var after_empty = 0
+@var after_fraction = 0
+@var after_scale = 0
+@var finished = 0
+@sprite "Coordinator" {
+  @init {}
+  当绿旗被点击 {
+    scratch-tensor-extension.[删除所有 Tensor]
+    scratch-tensor-extension.[创建 Tensor 命名为 "A" 并赋值 "[[1,2],[3,4]]" 需梯度: <false>]
+    scratch-tensor-extension.[对 Tensor "A" 沿维度 "全部" 进行 /'求和(Sum)'/ 保留维度: <false> 赋值给 "all"]
+    scratch-tensor-extension.[对 Tensor "A" 沿维度 "-1" 进行 /'求和(Sum)'/ 保留维度: <false> 赋值给 "rows"]
+    scratch-tensor-extension.[截取 Tensor "A" 沿维度 1 从索引 0 到索引 1（不含） 赋值给 "selected"]
+    [将 $all 设为 scratch-tensor-extension.(获取 Tensor "all" 的 /'数值'/)]
+    [将 $rows 设为 scratch-tensor-extension.(获取 Tensor "rows" 的 /'数值'/)]
+    [将 $selected 设为 scratch-tensor-extension.(获取 Tensor "selected" 的 /'数值'/)]
+    [广播 "invalid-options" 并等待]
+    [将 $finished 设为 1]
+  }
+}
+@sprite "NaN axis" {
+  @init {}
+  当收到广播 "invalid-options" {
+    scratch-tensor-extension.[对 Tensor "A" 沿维度 "NaN" 进行 /'求和(Sum)'/ 保留维度: <false> 赋值给 "invalid"]
+    [将 $after_nan 设为 1]
+  }
+}
+@sprite "Empty axis" {
+  @init {}
+  当收到广播 "invalid-options" {
+    scratch-tensor-extension.[对 Tensor "A" 沿维度 "" 进行 /'求和(Sum)'/ 保留维度: <false> 赋值给 "invalid"]
+    [将 $after_empty 设为 1]
+  }
+}
+@sprite "Fractional axis" {
+  @init {}
+  当收到广播 "invalid-options" {
+    scratch-tensor-extension.[对 Tensor "A" 沿维度 "0.5" 进行 /'求和(Sum)'/ 保留维度: <false> 赋值给 "invalid"]
+    [将 $after_fraction 设为 1]
+  }
+}
+@sprite "Negative scale" {
+  @init {}
+  当收到广播 "invalid-options" {
+    scratch-tensor-extension.[Scaled Dot Product Attention Q: "A" K: "A" V: "A" 因果掩码: <false> 丢弃概率: 0 缩放（0=自动）: -1 赋值给 "invalid"]
+    [将 $after_scale 设为 1]
+  }
+}

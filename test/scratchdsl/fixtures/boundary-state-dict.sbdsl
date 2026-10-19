@@ -1,0 +1,23 @@
+@var checkpoint = ""
+@var modified = ""
+@var restored = ""
+@var gradient = ""
+@var frozen = ""
+@sprite "ScratchDSL 验证" {
+  @init {}
+  当绿旗被点击 {
+    scratch-tensor-extension.[创建 Tensor 命名为 "P" 并赋值 "[1,2]" 需梯度: <true>]
+    scratch-tensor-extension.[创建 Tensor 命名为 "C" 并赋值 "[9,8]" 需梯度: <false>]
+    [将 $checkpoint 设为 scratch-tensor-extension.(获取当前模型权重字典 JSON 字符串)]
+    scratch-tensor-extension.[张量 "P" 与 "C" 进行 /'*'/ 运算 赋值给 "derived"]
+    scratch-tensor-extension.[对 Tensor "derived" 进行反向传播]
+    scratch-tensor-extension.[执行 SGD 优化器 学习率: 1 动量: 0 权重衰减: 0]
+    [将 $modified 设为 scratch-tensor-extension.(获取当前模型权重字典 JSON 字符串)]
+    scratch-tensor-extension.[从 StateDict 文本 $checkpoint 导入并恢复模型权重]
+    [将 $gradient 设为 scratch-tensor-extension.(获取 Tensor "P" 的 /'梯度'/)]
+    scratch-tensor-extension.[创建 Tensor 命名为 "frozen" 并赋值 "[10,11]" 需梯度: <false>]
+    scratch-tensor-extension.[从 StateDict 文本 "{\"framework\":\"ScratchTensor\",\"tensors\":[{\"name\":\"frozen\",\"id\":900001,\"shape\":[2],\"requires_grad\":true,\"data\":[3,4]},{\"name\":\"newParam\",\"id\":900002,\"shape\":[1],\"requires_grad\":true,\"data\":[5]}]}" 导入并恢复模型权重]
+    [将 $frozen 设为 scratch-tensor-extension.(获取 Tensor "frozen" 的 /'数值'/)]
+    [将 $restored 设为 scratch-tensor-extension.(获取当前模型权重字典 JSON 字符串)]
+  }
+}

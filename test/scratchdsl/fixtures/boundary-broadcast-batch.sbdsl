@@ -1,0 +1,22 @@
+@var product = ""
+@var biased = ""
+@var ready = 0
+@sprite "producer" {
+  @init {}
+  当绿旗被点击 {
+    scratch-tensor-extension.[创建 Tensor 命名为 "A" 并赋值 "[[[1,2],[3,4]],[[5,6],[7,8]]]" 需梯度: <false>]
+    scratch-tensor-extension.[创建 Tensor 命名为 "B" 并赋值 "[[[2,0],[0,3]]]" 需梯度: <false>]
+    scratch-tensor-extension.[创建 Tensor 命名为 "bias" 并赋值 "[10,20]" 需梯度: <false>]
+    [广播 "compute" 并等待]
+    [将 $product 设为 scratch-tensor-extension.(获取 Tensor "product" 的 /'数值'/)]
+    [将 $biased 设为 scratch-tensor-extension.(获取 Tensor "biased" 的 /'数值'/)]
+  }
+}
+@sprite "consumer" {
+  @init {}
+  当收到广播 "compute" {
+    scratch-tensor-extension.[张量 "A" 与 "B" 进行 /'@'/ 运算 赋值给 "product"]
+    scratch-tensor-extension.[张量 "product" 与 "bias" 进行 /'+'/ 运算 赋值给 "biased"]
+    [将 $ready 设为 1]
+  }
+}

@@ -1,0 +1,48 @@
+@var initial = ""
+@var first = ""
+@var reused = ""
+@var second = ""
+@var disabled = ""
+@var old_graph = ""
+@var cleared = ""
+@var intermediate = ""
+@var target = ""
+@var unrelated = ""
+@var input = ""
+@var parameter = ""
+@var constant_gradient = ""
+@sprite "ScratchDSL 验证" {
+  @init {}
+  当绿旗被点击 {
+    scratch-tensor-extension.[删除所有 Tensor]
+
+    scratch-tensor-extension.[设置计算图追踪: <true>]
+    scratch-tensor-extension.[创建 Tensor 命名为 "W" 并赋值 "[[2]]" 需梯度: <true>]
+    scratch-tensor-extension.[创建 Tensor 命名为 "X" 并赋值 "[[3]]" 需梯度: <false>]
+    [将 $initial 设为 scratch-tensor-extension.(获取 Tensor "W" 的 /'梯度'/)]
+    scratch-tensor-extension.[张量 "W" 与 "X" 进行 /'*'/ 运算 赋值给 "unrelated"]
+    scratch-tensor-extension.[张量 "W" 与 "X" 进行 /'*'/ 运算 赋值给 "mid"]
+    scratch-tensor-extension.[张量 "mid" 与 "X" 进行 /'*'/ 运算 赋值给 "loss"]
+    scratch-tensor-extension.[对 Tensor "loss" 进行反向传播]
+    [将 $first 设为 scratch-tensor-extension.(获取 Tensor "W" 的 /'梯度'/)]
+    [将 $target 设为 scratch-tensor-extension.(获取 Tensor "loss" 的 /'数值'/)]
+    [将 $unrelated 设为 scratch-tensor-extension.(获取 Tensor "unrelated" 的 /'数值'/)]
+    scratch-tensor-extension.[对 Tensor "loss" 进行反向传播]
+    [将 $reused 设为 scratch-tensor-extension.(获取 Tensor "W" 的 /'梯度'/)]
+    scratch-tensor-extension.[张量 "W" 与 "X" 进行 /'*'/ 运算 赋值给 "next"]
+    scratch-tensor-extension.[对 Tensor "next" 进行反向传播]
+    [将 $second 设为 scratch-tensor-extension.(获取 Tensor "W" 的 /'梯度'/)]
+    scratch-tensor-extension.[设置计算图追踪: <false>]
+    scratch-tensor-extension.[张量 "W" 与 "X" 进行 /'*'/ 运算 赋值给 "untracked"]
+    scratch-tensor-extension.[对 Tensor "untracked" 进行反向传播]
+    [将 $disabled 设为 scratch-tensor-extension.(获取 Tensor "W" 的 /'梯度'/)]
+    scratch-tensor-extension.[对 Tensor "unrelated" 进行反向传播]
+    [将 $old_graph 设为 scratch-tensor-extension.(获取 Tensor "W" 的 /'梯度'/)]
+    scratch-tensor-extension.[清空所有参数梯度]
+    [将 $cleared 设为 scratch-tensor-extension.(获取 Tensor "W" 的 /'梯度'/)]
+    [将 $input 设为 scratch-tensor-extension.(获取 Tensor "X" 的 /'数值'/)]
+    [将 $parameter 设为 scratch-tensor-extension.(获取 Tensor "W" 的 /'数值'/)]
+    [将 $constant_gradient 设为 scratch-tensor-extension.(获取 Tensor "X" 的 /'梯度'/)]
+    [将 $intermediate 设为 scratch-tensor-extension.(获取 Tensor "mid" 的 /'数值'/)]
+  }
+}

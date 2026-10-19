@@ -1,0 +1,6 @@
+@sprite "ScratchDSL 验证" {
+  @init {}
+  当绿旗被点击 {
+    tensor.[删除所有 Tensor]
+  }
+}

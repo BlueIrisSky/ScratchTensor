@@ -1,0 +1,19 @@
+@var before = ""
+@var after = ""
+@var value = ""
+@var gradient = ""
+@sprite "ScratchDSL 验证" {
+  @init {}
+  当绿旗被点击 {
+    scratch-tensor-extension.[删除所有 Tensor]
+
+    scratch-tensor-extension.[设置计算图追踪: <true>]
+    scratch-tensor-extension.[创建 Tensor 命名为 "W" 并赋值 "[[2]]" 需梯度: <true>]
+    scratch-tensor-extension.[对 Tensor "W" 进行反向传播]
+    [将 $before 设为 scratch-tensor-extension.(获取当前模型权重字典 JSON 字符串)]
+    scratch-tensor-extension.[创建 Tensor 命名为 "W" 并赋值 "[[5]]" 需梯度: <true>]
+    [将 $after 设为 scratch-tensor-extension.(获取当前模型权重字典 JSON 字符串)]
+    [将 $value 设为 scratch-tensor-extension.(获取 Tensor "W" 的 /'标量值'/)]
+    [将 $gradient 设为 scratch-tensor-extension.(获取 Tensor "W" 的 /'梯度'/)]
+  }
+}

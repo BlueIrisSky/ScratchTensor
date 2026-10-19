@@ -1,0 +1,27 @@
+@var temporary = ""
+@var parameter = ""
+@var before = ""
+@var after = ""
+@var after_failure = 0
+@sprite "Coordinator" {
+  @init {}
+  当绿旗被点击 {
+    scratch-tensor-extension.[删除所有 Tensor]
+    scratch-tensor-extension.[创建 Tensor 命名为 "P" 并赋值 "[2]" 需梯度: <true>]
+    scratch-tensor-extension.[创建 Tensor 命名为 "X" 并赋值 "[3]" 需梯度: <false>]
+    scratch-tensor-extension.[张量 "P" 与 "X" 进行 /'+'/ 运算 赋值给 "temp"]
+    scratch-tensor-extension.[张量 "P" 与 "X" 进行 /'*'/ 运算 赋值给 "temp"]
+    [将 $temporary 设为 scratch-tensor-extension.(获取 Tensor "temp" 的 /'数值'/)]
+    [将 $before 设为 scratch-tensor-extension.(获取当前模型权重字典 JSON 字符串)]
+    [广播 "overwrite" 并等待]
+    [将 $parameter 设为 scratch-tensor-extension.(获取 Tensor "P" 的 /'数值'/)]
+    [将 $after 设为 scratch-tensor-extension.(获取当前模型权重字典 JSON 字符串)]
+  }
+}
+@sprite "Protected write" {
+  @init {}
+  当收到广播 "overwrite" {
+    scratch-tensor-extension.[张量 "P" 与 "X" 进行 /'+'/ 运算 赋值给 "P"]
+    [将 $after_failure 设为 1]
+  }
+}

@@ -1,0 +1,20 @@
+@var probabilities = ""
+@var causal = ""
+@var unmasked = ""
+@sprite "ScratchDSL 验证" {
+  @init {}
+  当绿旗被点击 {
+    scratch-tensor-extension.[创建 Tensor 命名为 "logits" 并赋值 "[[1000,1001],[-1000,-999]]" 需梯度: <false>]
+    scratch-tensor-extension.[Softmax 输入: "logits" 沿维度: -1 赋值给 "probabilities"]
+    [将 $probabilities 设为 scratch-tensor-extension.(获取 Tensor "probabilities" 的 /'数值'/)]
+    scratch-tensor-extension.[创建 Tensor 命名为 "Q" 并赋值 "[[[[0,0],[0,0]]]]" 需梯度: <false>]
+    scratch-tensor-extension.[创建 Tensor 命名为 "K" 并赋值 "[[[[0,0],[0,0]]]]" 需梯度: <false>]
+    scratch-tensor-extension.[创建 Tensor 命名为 "V" 并赋值 "[[[[2],[6]]]]" 需梯度: <false>]
+    scratch-tensor-extension.[Scaled Dot Product Attention Q: "Q" K: "K" V: "V"
+    因果掩码: <true> 丢弃概率: 0 缩放（0=自动）: 0 赋值给 "causal"]
+    scratch-tensor-extension.[Scaled Dot Product Attention Q: "Q" K: "K" V: "V"
+    因果掩码: <false> 丢弃概率: 0 缩放（0=自动）: 0 赋值给 "unmasked"]
+    [将 $causal 设为 scratch-tensor-extension.(获取 Tensor "causal" 的 /'数值'/)]
+    [将 $unmasked 设为 scratch-tensor-extension.(获取 Tensor "unmasked" 的 /'数值'/)]
+  }
+}

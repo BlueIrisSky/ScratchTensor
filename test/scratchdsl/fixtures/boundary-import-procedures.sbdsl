@@ -1,0 +1,24 @@
+import common
+import common
+@var factor = 3
+@var global_result = ""
+@var private_result = ""
+@sprite "worker" {
+  @init {}
+  @var factor = 7
+  @list calls = []
+  定义自制积木 局部计算 @output 启用 <@enabled> {
+    如果 <@enabled> 那么 {
+      scratch-tensor-extension.[对 Tensor "X" 计算幂 $factor 赋值给 @output]
+      [将 @output 加入 $list:calls]
+    }
+  }
+  当绿旗被点击 {
+    scratch-tensor-extension.[创建 Tensor 命名为 "X" 并赋值 "[2]" 需梯度: <false>]
+    [公共计算 "global" 启用 <true>]
+    [局部计算 "private" 启用 <true>]
+    [公共计算 "disabled" 启用 <false>]
+    [将 $global_result 设为 scratch-tensor-extension.(获取 Tensor "global" 的 /'数值'/)]
+    [将 $private_result 设为 scratch-tensor-extension.(获取 Tensor "private" 的 /'数值'/)]
+  }
+}

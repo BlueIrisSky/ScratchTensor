@@ -1,0 +1,78 @@
+@var after_command = 0
+@var after_reporter = 0
+@var after_scalar = 0
+@var after_procedure = 0
+@var after_caller = 0
+@var after_concat = 0
+@var after_stack = 0
+@var independent_finished = 0
+@var coordinator_finished = 0
+@var concat_value = ""
+@var stack_value = ""
+@sprite "Coordinator" {
+  @init {}
+  当绿旗被点击 {
+    scratch-tensor-extension.[删除所有 Tensor]
+    scratch-tensor-extension.[创建 Tensor 命名为 "A" 并赋值 "[1,2]" 需梯度: <false>]
+    scratch-tensor-extension.[创建 Tensor 命名为 "concat_out" 并赋值 "[99]" 需梯度: <false>]
+    scratch-tensor-extension.[创建 Tensor 命名为 "stack_out" 并赋值 "[88]" 需梯度: <false>]
+    [广播 "failures" 并等待]
+    [将 $concat_value 设为 scratch-tensor-extension.(获取 Tensor "concat_out" 的 /'数值'/)]
+    [将 $stack_value 设为 scratch-tensor-extension.(获取 Tensor "stack_out" 的 /'数值'/)]
+    [将 $coordinator_finished 设为 1]
+  }
+}
+@sprite "Command failure" {
+  @init {}
+  当收到广播 "failures" {
+    scratch-tensor-extension.[张量 "A" 与 "absent" 进行 /'+'/ 运算 赋值给 "invalid"]
+    [将 $after_command 设为 1]
+  }
+}
+@sprite "Reporter failure" {
+  @init {}
+  当收到广播 "failures" {
+    [将 $after_reporter 设为 scratch-tensor-extension.(获取 Tensor "absent" 的 /'数值'/)]
+    [将 $after_reporter 设为 1]
+  }
+}
+@sprite "Scalar failure" {
+  @init {}
+  当收到广播 "failures" {
+    [将 $after_scalar 设为 scratch-tensor-extension.(获取 Tensor "A" 的 /'标量值'/)]
+    [将 $after_scalar 设为 1]
+  }
+}
+@sprite "Procedure failure" {
+  @init {}
+  定义自制积木 失败的反向传播 {
+    scratch-tensor-extension.[对 Tensor "absent" 进行反向传播]
+    [将 $after_procedure 设为 1]
+  }
+  当收到广播 "failures" {
+    [失败的反向传播]
+    [将 $after_caller 设为 1]
+  }
+}
+@sprite "Concat failure" {
+  @init {}
+  当收到广播 "failures" {
+    scratch-tensor-extension.[拼接张量列表: "[\"A\",\"absent\"]" 沿维度: 0 赋值给 "concat_out"]
+    [将 $after_concat 设为 1]
+  }
+}
+@sprite "Stack failure" {
+  @init {}
+  当收到广播 "failures" {
+    scratch-tensor-extension.[堆叠张量列表: "[\"A\",\"absent\"]" 在新维度: 0 赋值给 "stack_out"]
+    [将 $after_stack 设为 1]
+  }
+}
+@sprite "Independent worker" {
+  @init {}
+  当收到广播 "failures" {
+    [等待 0.01 秒]
+    [将 $independent_finished 设为 1]
+    [说 "其他线程继续运行"]
+  }
+}

@@ -1,0 +1,16 @@
+@var hp = 0
+@var score = 0
+@var passed = 0
+@sprite "ScratchDSL 验证" {
+  @init {}
+  当绿旗被点击 {
+    scratch-tensor-extension.[创建 Tensor 命名为 "A" 并赋值 "5" 需梯度: <false>]
+    [将 $score 设为 scratch-tensor-extension.(获取 Tensor "A" 的 /'标量值'/)]
+    如果 <$hp < 1> 那么 { [将 $passed 增加 1] }
+    如果 <$score > 4> 那么 { [将 $passed 增加 1] }
+    如果 <<$score>4> 与 <$hp<1>> 那么 { [将 $passed 增加 1] }
+    如果 <(8 / 2) > 3> 那么 { [将 $passed 增加 1] }
+    如果 <$score>$hp> 那么 { [将 $passed 增加 1] }
+    如果 <<true> > <false>> 那么 { [将 $passed 增加 1] }
+  }
+}
